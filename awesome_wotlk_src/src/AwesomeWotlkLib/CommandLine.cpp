@@ -3,10 +3,15 @@
 #include "GameClient.h"
 #include "Utils.h"
 #include <shellapi.h>
+#include <bcrypt.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <string>
 #include <vector>
+#include <map>
+#include <fstream>
+
+#pragma comment(lib, "bcrypt.lib")
 
 
 static std::vector<std::string> s_commandLine;
@@ -44,8 +49,98 @@ static void writeLog(const char* fmt, ...)
 }
 
 
+// ── JSON file fallback ────────────────────────────────────────────────────────
+// When Wow.exe is launched by something that doesn't forward argv (e.g. an
+// external GUI loader), read autologin parameters from a JSON file placed
+// next to Wow.exe by the launcher. The file is deleted after first read
+// because it contains the password.
+
+static std::map<std::string, std::string> s_jsonParams;
+static bool s_jsonLoaded = false;
+
+
+static void parseJsonString(const char*& p, const char* end, std::string& out)
+{
+    out.clear();
+    if (p >= end || *p != '"') return;
+    ++p;
+    while (p < end && *p != '"') {
+        if (*p == '\\' && p + 1 < end) {
+            char c = p[1];
+            switch (c) {
+                case '"':  out += '"';  break;
+                case '\\': out += '\\'; break;
+                case '/':  out += '/';  break;
+                case 'n':  out += '\n'; break;
+                case 't':  out += '\t'; break;
+                case 'r':  out += '\r'; break;
+                case 'b':  out += '\b'; break;
+                case 'f':  out += '\f'; break;
+                default:   out += c;    break;
+            }
+            p += 2;
+        } else {
+            out += *p++;
+        }
+    }
+    if (p < end && *p == '"') ++p;
+}
+
+
+static void skipJsonWs(const char*& p, const char* end)
+{
+    while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r'))
+        ++p;
+}
+
+
+static void loadJsonParams()
+{
+    if (s_jsonLoaded) return;
+    s_jsonLoaded = true;
+
+    char path[MAX_PATH] = {0};
+    if (!GetModuleFileNameA(NULL, path, MAX_PATH)) return;
+    char* slash = strrchr(path, '\\');
+    if (!slash) return;
+    *(slash + 1) = '\0';
+    strcat_s(path, MAX_PATH, "autologin.json");
+
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (!f) return;
+    std::streamsize sz = f.tellg();
+    if (sz <= 0 || sz > 8192) return; // sanity
+    f.seekg(0, std::ios::beg);
+    std::vector<char> buf((size_t)sz);
+    if (!f.read(buf.data(), sz)) return;
+    f.close();
+
+    const char* p = buf.data();
+    const char* end = p + sz;
+    skipJsonWs(p, end);
+    if (p >= end || *p != '{') return;
+    ++p; skipJsonWs(p, end);
+    while (p < end && *p != '}') {
+        std::string key, val;
+        parseJsonString(p, end, key);
+        skipJsonWs(p, end);
+        if (p >= end || *p != ':') break;
+        ++p; skipJsonWs(p, end);
+        parseJsonString(p, end, val);
+        if (!key.empty()) s_jsonParams[key] = val;
+        skipJsonWs(p, end);
+        if (p < end && *p == ',') { ++p; skipJsonWs(p, end); }
+    }
+
+    writeLog("[json] loaded %d params", (int)s_jsonParams.size());
+    // Wipe file — it contains the password
+    DeleteFileA(path);
+}
+
+
 static const char* getParam(const char* item)
 {
+    // 1. Command-line argv
     for (int i = 1; (i + 1) < (int)s_commandLine.size(); i++) {
         const char* key = s_commandLine[i].c_str();
         if (char c = *(key++); c == '-' || c == '/') {
@@ -54,6 +149,13 @@ static const char* getParam(const char* item)
                 return s_commandLine[i + 1].c_str();
         }
     }
+
+    // 2. autologin.json next to Wow.exe (fallback for external loaders)
+    loadJsonParams();
+    auto it = s_jsonParams.find(item);
+    if (it != s_jsonParams.end() && !it->second.empty())
+        return it->second.c_str();
+
     return NULL;
 }
 
@@ -116,11 +218,120 @@ static bool callLuaSelect(lua_State* L, int oneBasedIdx)
 }
 
 
+// ── TOTP (RFC 6238) ───────────────────────────────────────────────────────────
+// We compute the 6-digit code on demand in the DLL so it can never expire
+// between launcher click and TokenEnterDialog appearing.
+
+static bool base32Decode(const char* in, std::vector<uint8_t>& out)
+{
+    out.clear();
+    int buf = 0, bits = 0;
+    for (const char* p = in; *p; ++p) {
+        char c = *p;
+        if (c == ' ' || c == '-' || c == '=') continue;
+        int v;
+        if (c >= 'A' && c <= 'Z')      v = c - 'A';
+        else if (c >= 'a' && c <= 'z') v = c - 'a';
+        else if (c >= '2' && c <= '7') v = 26 + (c - '2');
+        else return false;
+        buf = (buf << 5) | v;
+        bits += 5;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back((uint8_t)((buf >> bits) & 0xFF));
+        }
+    }
+    return !out.empty();
+}
+
+
+static bool hmacSha1(const uint8_t* key, DWORD keyLen,
+                     const uint8_t* msg, DWORD msgLen,
+                     uint8_t outDigest[20])
+{
+    BCRYPT_ALG_HANDLE hAlg = NULL;
+    BCRYPT_HASH_HANDLE hHash = NULL;
+    bool ok = false;
+    if (BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA1_ALGORITHM, NULL,
+                                    BCRYPT_ALG_HANDLE_HMAC_FLAG) != 0)
+        return false;
+    if (BCryptCreateHash(hAlg, &hHash, NULL, 0,
+                         (PUCHAR)key, keyLen, 0) == 0
+        && BCryptHashData(hHash, (PUCHAR)msg, msgLen, 0) == 0
+        && BCryptFinishHash(hHash, outDigest, 20, 0) == 0)
+        ok = true;
+    if (hHash) BCryptDestroyHash(hHash);
+    BCryptCloseAlgorithmProvider(hAlg, 0);
+    return ok;
+}
+
+
+static std::string computeTotp(const std::string& base32Secret)
+{
+    std::vector<uint8_t> key;
+    if (!base32Decode(base32Secret.c_str(), key)) return "";
+
+    // Unix time in seconds, 30s window
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    ULARGE_INTEGER ull;
+    ull.LowPart = ft.dwLowDateTime;
+    ull.HighPart = ft.dwHighDateTime;
+    // FILETIME = 100-ns intervals since 1601; Unix = seconds since 1970
+    uint64_t unixSec = (ull.QuadPart - 116444736000000000ULL) / 10000000ULL;
+    uint64_t counter = unixSec / 30;
+
+    uint8_t msg[8];
+    for (int i = 7; i >= 0; --i) {
+        msg[i] = (uint8_t)(counter & 0xFF);
+        counter >>= 8;
+    }
+
+    uint8_t digest[20];
+    if (!hmacSha1(key.data(), (DWORD)key.size(), msg, 8, digest))
+        return "";
+
+    int off = digest[19] & 0x0F;
+    uint32_t code = ((digest[off] & 0x7F) << 24)
+                  | ((digest[off + 1] & 0xFF) << 16)
+                  | ((digest[off + 2] & 0xFF) << 8)
+                  | (digest[off + 3] & 0xFF);
+    code %= 1000000;
+
+    char buf[8];
+    sprintf_s(buf, "%06u", code);
+    return std::string(buf);
+}
+
+
+static std::string getCurrentToken()
+{
+    // Prefer fresh TOTP from secret (works regardless of launcher-to-dialog delay)
+    const char* secret = getParam("totp_secret");
+    if (secret && *secret) {
+        std::string code = computeTotp(secret);
+        if (!code.empty()) {
+            writeLog("[totp] computed fresh code=%s", code.c_str());
+            return code;
+        }
+        writeLog("[totp] failed to compute from secret");
+    }
+    // Legacy fallback: static pre-computed token
+    const char* tok = getParam("token");
+    if (tok && *tok) return std::string(tok);
+    return "";
+}
+
+
 static void tryTokenSubmit()
 {
     if (InterlockedCompareExchange(&s_tokenSubmitted, 0, 0)) return;
-    const char* token = getParam("token");
-    if (!token || !*token) return;
+
+    // Compute fresh on every call — TOTP code rotates every 30s, and we don't
+    // know when the dialog will actually appear after launcher click.
+    std::string fresh = getCurrentToken();
+    if (fresh.empty()) return;
+    const char* token = fresh.c_str();
     for (const char* p = token; *p; ++p)
         if (*p < '0' || *p > '9') return;
 
