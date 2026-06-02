@@ -1,6 +1,5 @@
 # Менеджер персонажей WOW 3.3.5a
-
-<img width="883" height="593" alt="image" src="https://github.com/user-attachments/assets/6537801f-3c4f-4e01-a2de-9345f5ed5794" />
+<img width="877" height="587" alt="image" src="https://github.com/user-attachments/assets/10ca3cc6-89db-4dbe-957f-14b3b9b986f9" />
 
 Лаунчер для World of Warcraft 3.3.5a (WotLK) с автологином.
 Один клик по карточке персонажа — клиент сам вводит логин, пароль, выбирает реалм, заходит за нужного персонажа и (если подключено) подтверждает 2FA-код.
