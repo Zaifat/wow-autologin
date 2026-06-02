@@ -533,14 +533,31 @@ def patch_wow_exe(wow_exe):
         f.write(image)
 
 
+def _file_hash(path):
+    try:
+        h = hashlib.md5()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
 def deploy_patch(wow_dir):
     src_dll = _bundled(AWESOME_DLL)
     if not os.path.isfile(src_dll):
         raise RuntimeError(t("В программу не зашит {dll}").format(dll=AWESOME_DLL))
     dst_dll = os.path.join(wow_dir, AWESOME_DLL)
+    # Re-deploy whenever the deployed DLL differs by CONTENT (not just size) —
+    # a size-only check could leave a stale DLL in place (e.g. one without
+    # 2FA/totp support), which silently breaks token entry.
     if (not os.path.isfile(dst_dll)
-            or os.path.getsize(dst_dll) != os.path.getsize(src_dll)):
-        shutil.copy2(src_dll, dst_dll)
+            or _file_hash(dst_dll) != _file_hash(src_dll)):
+        try:
+            shutil.copy2(src_dll, dst_dll)
+        except OSError:
+            pass  # DLL is loaded by a running client — keep the existing one
     wow_exe = os.path.join(wow_dir, "Wow.exe")
     if not os.path.isfile(wow_exe):
         raise RuntimeError(t("Не найден Wow.exe в {dir}").format(dir=wow_dir))
