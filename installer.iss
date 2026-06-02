@@ -4,7 +4,7 @@
 ; downloads.
 
 #define MyAppName    "Менеджер персонажей WOW"
-#define MyAppVersion "1.3.4"
+#define MyAppVersion "1.4.0"
 #define MyAppPublisher "Zaifat"
 #define MyAppExeName "Manager_WOW.exe"
 
@@ -19,6 +19,9 @@ AppPublisherURL=https://t.me/Zaifat_DK
 DefaultDirName={autopf}\WowManager
 DefaultGroupName=Менеджер персонажей WOW
 DisableProgramGroupPage=yes
+; Show the directory-selection page so the user can choose the install
+; location; it defaults to Program Files.
+DisableDirPage=no
 ; Admin rights required to write under Program Files. The user can still
 ; override via the dialog (e.g. install per-user under AppData) if they
 ; prefer a no-elevation install.
