@@ -17,6 +17,7 @@ import threading
 import time
 import tkinter as tk
 import re
+import urllib.request
 import webbrowser
 import zipfile
 from tkinter import filedialog, messagebox, ttk
@@ -52,6 +53,11 @@ TELEGRAM_HANDLE = "@Zaifat"
 AWESOME_DLL = "AwesomeWotlkLib.dll"
 PATCH_MARKER = b"AwesomeWotlkLib.dll\x00"
 
+GITHUB_REPO = "Zaifat/wow-autologin"
+RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases/latest"
+# TOTP breaks if the PC clock drifts past ~half a 30s window; warn beyond this.
+TIME_DRIFT_WARN_SEC = 20
+
 # ── localization ───────────────────────────────────────────────────────────────
 # Strings are keyed by their Russian source text. t() returns the English
 # variant when LANG == "en", otherwise echoes the Russian string. This keeps
@@ -77,7 +83,6 @@ _EN = {
     "Персонажи": "Characters",
     "Аккаунты": "Accounts",
     "Персонажей: {c} · Аккаунтов: {a}": "Characters: {c} · Accounts: {a}",
-    "Выбери запись в списке.": "Select an entry in the list.",
     # table headings
     "Персонаж": "Character",
     "Класс": "Class",
@@ -122,8 +127,11 @@ _EN = {
     "Язык:": "Language:",
     "Шифровать пароли (привязать к этому ПК)":
         "Encrypt passwords (bind to this PC)",
-    "Внешний лоадер (необязательно — используется для всех персонажей)":
-        "External loader (optional — used for all characters)",
+    "Запускать через внешний лоадер":
+        "Launch via external loader",
+    "Настройки лоадера": "Loader settings",
+    "Лоадер используется для всех персонажей.":
+        "The loader is used for all characters.",
     "Путь к .exe лоадера": "Loader .exe path",
     "Выбери .exe лоадера": "Select loader .exe",
     "Заголовок окна": "Window title",
@@ -149,6 +157,46 @@ _EN = {
         "Button labeled «{btn}» was not found in the loader window.\n\n"
         "Check the text in Settings → Advanced.\n\n"
         "A dump of all window controls was saved to:\n{path}",
+    # hover card / columns
+    "Карточка персонажа при наведении": "Character card on hover",
+    "Оверлей в игре: кнопка перезахода у миникарты":
+        "In-game overlay: relog button by the minimap",
+    "Столбцы в списке": "Columns in the list",
+    "Конструктор столбцов": "Columns builder",
+    "Конструктор карточки": "Card builder",
+    "Тащи ≡ для порядка. Галочка — показывать. Ширину меняй прямо в таблице "
+    "за край заголовка. Точка справа — сортировать по столбцу.":
+        "Drag ≡ to reorder. Checkbox — show it. Resize widths in the table by "
+        "the heading edge. Right dot — sort by that column.",
+    "Тащи ≡ для порядка. Галочка — показывать. Название можно менять.":
+        "Drag ≡ to reorder. Checkbox — show it. Names are editable.",
+    "Показ": "Show",
+    "Название": "Name",
+    "Ширина": "Width",
+    "Сорт.": "Sort",
+    "Сортировать по убыванию": "Sort descending",
+    "Сбросить названия": "Reset names",
+    "Ур.": "Lvl",
+    "Голд": "Gold",
+    "iLvl": "iLvl",
+    "Аккаунт:": "Account:",
+    "Реалм:": "Realm:",
+    "ГС:": "GS:",
+    "Голд:": "Gold:",
+    "Уровень:": "Level:",
+    "iLvl:": "iLvl:",
+    "Наиграно:": "Played:",
+    "Зона:": "Zone:",
+    "Профессии:": "Professions:",
+    "Валюта:": "Currency:",
+    "Рейд-локауты:": "Raid lockouts:",
+    "Нет данных из игры.": "No in-game data yet.",
+    # banners
+    "⚠ Часы ПК расходятся на {n} сек — автоввод 2FA может не работать.":
+        "⚠ PC clock is off by {n}s — 2FA auto-submit may fail.",
+    "Синхронизировать время": "Sync time",
+    "Доступна новая версия {v}": "New version {v} is available",
+    "Скачать обновление": "Download update",
     # tray
     "Показать": "Show",
     "Выход": "Exit",
@@ -193,7 +241,8 @@ _EN = {
     "Не удалось восстановить:\n{e}": "Restore failed:\n{e}",
     "Восстановить": "Restore",
     # shortcuts
-    "Ярлык на рабочем столе для записи": "Desktop shortcut for an entry",
+    "Ярлык на рабочем столе для записи ([П] персонаж / [А] аккаунт)":
+        "Desktop shortcut ([П] character / [А] account)",
     "Запись:": "Entry:",
     "Сделать ярлык": "Create shortcut",
     "Сначала добавь хотя бы одну запись.": "Add at least one entry first.",
@@ -248,6 +297,189 @@ def class_canon(disp):
     return CLASS_RU.get(disp, disp)
 
 
+def _ig(char, field, default=""):
+    """In-game value for a character (from the addon's SavedVariables)."""
+    rec = INGAME.get(str(char.get("name", "")).lower())
+    if not rec:
+        return default
+    v = rec.get(field)
+    return default if v is None else v
+
+
+# ── universal columns ──────────────────────────────────────────────────────────
+# Columns come from two sources: fixed fields of the manager record (class /
+# account / realm / realmlist) and ANY field the in-game addon collected
+# (level, gs, gold, honor, currencies-count, …). The settings dialog offers
+# exactly the columns for which data exists.
+
+STATIC_COLUMNS = {
+    "name":      ("Персонаж",  160, "w",      lambda c: c.get("name", "")),
+    "class":     ("Класс",     110, "w",      lambda c: class_disp(c.get("class", ""))),
+    "account":   ("Аккаунт",   110, "w",      lambda c: c.get("account", "")),
+    "realm":     ("Реалм",     200, "w",      lambda c: c.get("realm", "")),
+    "realmlist": ("Realmlist", 150, "w",      lambda c: c.get("realmlist", "")),
+}
+# Friendly labels + numeric flag for known in-game fields
+IG_LABELS = {
+    "level": "Ур.", "gs": "ГС", "ilvl": "iLvl", "gold": "Голд",
+    "honor": "Хонор", "arena": "Арена", "achPoints": "Очки дост.",
+    "spec": "Спек", "talents": "Таланты", "guild": "Гильдия", "zone": "Зона",
+    "subzone": "Подзона", "bagFree": "Слоты", "played": "Наиграно",
+    "race": "Раса", "faction": "Фракция",
+}
+IG_NUMERIC = {"level", "gs", "ilvl", "honor", "arena", "achPoints", "bagFree"}
+# Fields that are structural/meta and never offered as columns
+IG_SKIP = {"name", "realm", "updated", "currencies", "locks", "profs",
+           "xp", "xpMax", "rested", "class"}
+IG_ORDER = ["level", "gs", "ilvl", "gold", "honor", "arena", "achPoints",
+            "spec", "guild", "zone", "subzone", "bagFree", "played",
+            "race", "faction"]
+DEFAULT_COLUMNS = ["name", "class", "gs", "realm", "realmlist"]
+
+
+# Hover-card fields: scalar in-game fields + special sections
+CARD_LABELS = {
+    "level": "Уровень", "gs": "ГС", "ilvl": "iLvl", "gold": "Голд",
+    "honor": "Хонор", "arena": "Арена", "achPoints": "Очки дост.",
+    "spec": "Спек", "talents": "Таланты", "guild": "Гильдия", "zone": "Зона",
+    "subzone": "Подзона", "bagFree": "Слоты", "played": "Наиграно",
+    "race": "Раса", "faction": "Фракция",
+    "currencies": "Валюта", "locks": "Рейд-локауты", "profs": "Профессии",
+}
+CARD_ORDER = ["level", "gs", "ilvl", "gold", "honor", "arena", "achPoints",
+              "spec", "talents", "guild", "zone", "subzone", "bagFree",
+              "played", "race", "faction", "currencies", "locks", "profs"]
+CARD_SECTIONS = {"currencies", "locks", "profs"}
+
+
+def available_card_fields():
+    """Card fields for which data exists across collected records."""
+    present = set()
+    for rec in INGAME.values():
+        if not isinstance(rec, dict):
+            continue
+        for k, v in rec.items():
+            if k in CARD_LABELS and v not in (None, "", [], {}):
+                present.add(k)
+    return [k for k in CARD_ORDER if k in present]
+
+
+def card_lines(char, card_fields=None, card_labels=None):
+    """Flat 'Label: value' strings describing a character's collected in-game
+    data (gold / GS / level / currencies / lockouts / …). Shared by the in-game
+    relog-menu tooltip; returns [] when no data was collected for the name."""
+    rec = INGAME.get(str(char.get("name", "")).lower())
+    if not rec:
+        return []
+    fields = card_fields or CARD_ORDER
+    labels = card_labels or {}
+
+    def lbl(key):
+        return labels.get(key) or t(CARD_LABELS.get(key, key))
+
+    out = []
+    for key in fields:
+        if key == "currencies":
+            cur = rec.get("currencies") or {}
+            if isinstance(cur, dict) and cur:
+                out.append(lbl(key) + ":")
+                for cname, cnt in list(cur.items())[:14]:
+                    out.append("  %s: %s" % (cname, cnt))
+        elif key == "locks":
+            locks = rec.get("locks") or []
+            if isinstance(locks, dict):
+                locks = [v for _k, v in sorted(locks.items())]
+            if locks:
+                out.append(lbl(key) + ":")
+                now = time.time()
+                for lk in locks[:14]:
+                    if not isinstance(lk, dict):
+                        continue
+                    left = int((lk.get("resetAt") or 0) - now)
+                    cd = _fmt_dhm(left) if left > 0 else "—"
+                    out.append("  %s (%s) — %s"
+                               % (lk.get("name", "?"), lk.get("diff", ""), cd))
+        elif key == "profs":
+            profs = rec.get("profs") or []
+            if isinstance(profs, dict):
+                profs = [v for _k, v in sorted(profs.items())]
+            if profs:
+                out.append(lbl(key) + ": "
+                           + ", ".join(str(p) for p in profs[:4]))
+        else:
+            v = rec.get(key)
+            if v in (None, ""):
+                continue
+            if key == "gold":
+                v = fmt_gold(v)
+            elif key == "played":
+                v = _fmt_played(v)
+            out.append("%s: %s" % (lbl(key), v))
+    return out
+
+
+def _ig_column_getter(key):
+    def g(c, k=key):
+        v = _ig(c, k)
+        if v == "":
+            return ""
+        if k == "gold":
+            return fmt_gold(v)
+        if k == "played":
+            return _fmt_played(v)
+        return v
+    return g
+
+
+def _cur_column_getter(name):
+    def g(c, nm=name):
+        rec = INGAME.get(str(c.get("name", "")).lower())
+        cur = rec.get("currencies") if rec else None
+        if isinstance(cur, dict):
+            v = cur.get(nm)
+            return v if v is not None else ""
+        return ""
+    return g
+
+
+def col_meta(key):
+    """(label, width, anchor, getter) for a column key. Keys:
+       static (class/account/…), in-game field, or 'cur:<currency name>'."""
+    if key in STATIC_COLUMNS:
+        return STATIC_COLUMNS[key]
+    if key.startswith("cur:"):
+        name = key[4:]
+        return (name, 90, "center", _cur_column_getter(name))
+    label = IG_LABELS.get(key, key)
+    if key in IG_NUMERIC:
+        return (label, 60, "center", _ig_column_getter(key))
+    if key == "gold":
+        return (label, 95, "w", _ig_column_getter(key))
+    return (label, 110, "w", _ig_column_getter(key))
+
+
+def available_columns():
+    """All columns for which data exists: the static ones, every scalar in-game
+    field present, plus a column per distinct currency that anyone has."""
+    present, currencies = set(), set()
+    for rec in INGAME.values():
+        if not isinstance(rec, dict):
+            continue
+        for k, v in rec.items():
+            if k == "currencies" and isinstance(v, dict):
+                currencies.update(v.keys())
+                continue
+            if k in IG_SKIP or k in STATIC_COLUMNS:
+                continue
+            if isinstance(v, (dict, list)) or v in (None, ""):
+                continue
+            present.add(k)
+    ordered_ig = [k for k in IG_ORDER if k in present]
+    ordered_ig += sorted(k for k in present if k not in IG_ORDER)
+    cur_cols = ["cur:" + n for n in sorted(currencies)]
+    return list(STATIC_COLUMNS.keys()) + ordered_ig + cur_cols
+
+
 CLASS_COLORS = {
     "Воин": "#C79C6E",          "Паладин": "#F58CBA",
     "Охотник": "#ABD473",       "Разбойник": "#FFF569",
@@ -273,6 +505,7 @@ REALMS_DEFAULT = [
 ]
 
 REALMLISTS_DEFAULT = [
+    "logon.wowcircle.me",
     "logon.wowcircle.com",
 ]
 
@@ -302,7 +535,6 @@ THEMES = {
                   TEXT="#182033", MUTED="#697386", HEADER="#182033",
                   ACCENT="#D9B95E", LINK="#1F6FB2",
                   ENTRY_BG="#FFFFFF", BTN_BG="#E2E6EF",
-                  ROW_ALT="#F8FAFD",
                   # Selection = a darkening overlay (not a colour fill)
                   SEL_BG="#33405A", SEL_FG="#FFFFFF",
                   # Primary buttons (Добавить, Сохранить, Запустить)
@@ -311,28 +543,33 @@ THEMES = {
                   TEXT="#E8EBF2", MUTED="#8E96AA", HEADER="#0F1119",
                   ACCENT="#D9B95E", LINK="#7DB6E8",
                   ENTRY_BG="#1F2330", BTN_BG="#3A3F50",
-                  ROW_ALT="#2C3142",
                   SEL_BG="#0E1118", SEL_FG="#FFFFFF",
                   PRIMARY_BG="#D9B95E", PRIMARY_FG="#171717"),
+    # WotLK-styled gold/parchment theme
+    "wow":   dict(BG="#15110A", PANEL="#241D12", BORDER="#5C4A2A",
+                  TEXT="#EAD9B0", MUTED="#A8946A", HEADER="#0C0905",
+                  ACCENT="#E2C158", LINK="#D9B95E",
+                  ENTRY_BG="#1E180E", BTN_BG="#4A3B22",
+                  SEL_BG="#6B5526", SEL_FG="#FFF3D0",
+                  PRIMARY_BG="#E2C158", PRIMARY_FG="#1A1206"),
 }
 
 CURRENT_THEME = "light"
 
 # Module-level colour vars get rebound by apply_theme()
 BG = PANEL = BORDER = TEXT = MUTED = HEADER = ACCENT = LINK = "#000"
-ENTRY_BG = BTN_BG = ROW_ALT = SEL_BG = SEL_FG = "#000"
+ENTRY_BG = BTN_BG = SEL_BG = SEL_FG = "#000"
 PRIMARY_BG = PRIMARY_FG = "#000"
 
 def apply_theme(name):
     global BG, PANEL, BORDER, TEXT, MUTED, HEADER, ACCENT, LINK
-    global ENTRY_BG, BTN_BG, ROW_ALT, SEL_BG, SEL_FG
+    global ENTRY_BG, BTN_BG, SEL_BG, SEL_FG
     global PRIMARY_BG, PRIMARY_FG, CURRENT_THEME
     t = THEMES.get(name, THEMES["light"])
     CURRENT_THEME                    = name if name in THEMES else "light"
     BG, PANEL, BORDER, TEXT, MUTED   = t["BG"], t["PANEL"], t["BORDER"], t["TEXT"], t["MUTED"]
     HEADER, ACCENT, LINK             = t["HEADER"], t["ACCENT"], t["LINK"]
     ENTRY_BG, BTN_BG                 = t["ENTRY_BG"], t["BTN_BG"]
-    ROW_ALT                          = t["ROW_ALT"]
     SEL_BG, SEL_FG                   = t["SEL_BG"], t["SEL_FG"]
     PRIMARY_BG, PRIMARY_FG           = t["PRIMARY_BG"], t["PRIMARY_FG"]
 
@@ -422,6 +659,22 @@ def _config_dir():
 
 # ── config ────────────────────────────────────────────────────────────────────
 
+def _detect_os_lang():
+    """Default UI language from the OS: Russian → 'ru', anything else → 'en'."""
+    try:
+        if sys.platform == "win32":
+            lid = ctypes.windll.kernel32.GetUserDefaultUILanguage()
+            return "ru" if (lid & 0x3FF) == 0x19 else "en"   # 0x19 = Russian
+    except Exception:
+        pass
+    try:
+        import locale
+        loc = (locale.getdefaultlocale()[0] or "")
+        return "ru" if loc.lower().startswith("ru") else "en"
+    except Exception:
+        return "en"
+
+
 def _default_cfg():
     return {
         "wow_path":             r"E:\WOW",
@@ -430,7 +683,7 @@ def _default_cfg():
         "realmlists":           list(REALMLISTS_DEFAULT),
         "characters":           [],
         "theme":                "light",   # "light" | "dark"
-        "lang":                 "ru",      # "ru" | "en"
+        "lang":                 _detect_os_lang(),  # auto by OS on first run
         # Encrypt passwords / 2FA secrets at rest with Windows DPAPI (bound to
         # this PC + user). Turn off to store them as plaintext (portable).
         "encrypt_secrets":      True,
@@ -439,8 +692,24 @@ def _default_cfg():
         "backup_keep":          3,    # ring buffer size
         "backup_interval_min":  30,   # min minutes between snapshots
         "backup_dir":           "",   # empty = <wow_dir>/_WowManagerBackups
-        # Optional single external loader used for ALL characters.
-        # If `loader_path` is empty, characters launch WoW.exe directly.
+        # UI extras
+        "hover_card":           True,    # info card on row hover (deploys addon)
+        "overlay":              False,   # in-game minimap relog button
+        # Columns: ordered keys + per-column label/width overrides + sort
+        "columns":              ["class", "gs", "account", "realm", "realmlist"],
+        "column_labels":        {},      # key -> custom heading text
+        "column_widths":        {},      # key -> px width
+        "sort":                 {},      # {"col": key, "reverse": bool}
+        # Hover card: ordered field keys + per-field label overrides
+        "card_fields":          ["level", "gs", "ilvl", "gold", "zone",
+                                 "played", "currencies", "locks", "profs"],
+        "card_labels":          {},      # key -> custom label
+        # Window state
+        "win_geometry":         "",      # last "WxH+X+Y"
+        "sash_pos":             0,       # accounts-table divider position (px)
+        # Optional external loader used for ALL characters (enable with
+        # `use_loader`). If off, characters launch WoW.exe directly.
+        "use_loader":           False,
         "loader_path":          "",
         "loader_window_title":  "",
         "loader_launch_button": "",
@@ -455,6 +724,10 @@ def load_cfg():
     with open(CONFIG_FILE, "r", encoding="utf-8") as fh:
         cfg = json.load(fh)
 
+    # Migrate: older builds enabled the loader whenever loader_path was set.
+    # Preserve that for users upgrading from before the use_loader flag.
+    if "use_loader" not in cfg and (cfg.get("loader_path") or "").strip():
+        cfg["use_loader"] = True
     for k, v in _default_cfg().items():
         cfg.setdefault(k, v)
     if not isinstance(cfg.get("realms"), list) or not cfg["realms"]:
@@ -570,76 +843,323 @@ def update_realmlist(wow_dir, realmlist):
         f.write(f"set realmlist {realmlist}\n")
 
 
-# ── GearScore from SavedVariables ──────────────────────────────────────────────
-# Best-effort: WotLK GearScore is produced by an addon (GearScore / TacoTip /
-# GearScoreLib …) that writes a *.lua SavedVariables file. There is no single
-# universal schema, so we scan the account's and the character's SavedVariables
-# for "GearScore"-labelled numbers in a plausible range and take the best match.
+# ── WowManager addon: deploy + read its SavedVariables ─────────────────────────
 
-_GS_PATTERNS = [
-    re.compile(r'[Gg]ear\s*[Ss]core["\]\s]*=\s*"?(\d{3,5})'),
-    re.compile(r'["\[]GS["\]\s]*=\s*"?(\d{3,5})'),
-    re.compile(r'\bGearScore\b\D{0,12}(\d{3,5})'),
-]
+ADDON_NAME = "WowManager"
+ADDON_SV_FILE = "WowManager.lua"
+INGAME = {}   # name(lower) -> collected data dict, filled from the addon's SV
 
 
-def _gs_candidate_files(wow_dir, account, character):
-    """SavedVariables .lua files for the account + the specific character."""
-    files = []
-    if not (wow_dir and account):
-        return files
-    acc_root = os.path.join(wow_dir, "WTF", "Account")
-    if not os.path.isdir(acc_root):
-        return files
-    # Account folder name is usually the login upper-cased, but match loosely.
-    acc_dirs = [d for d in os.listdir(acc_root)
-                if d.upper() == account.upper()
-                or d.upper() == account.strip().upper()]
-    for acc in acc_dirs:
-        adir = os.path.join(acc_root, acc)
-        sv = os.path.join(adir, "SavedVariables")
-        if os.path.isdir(sv):
-            files += [os.path.join(sv, f) for f in os.listdir(sv)
-                      if f.lower().endswith(".lua")]
-        # per-character SavedVariables under each realm folder
-        for realm in os.listdir(adir):
-            rpath = os.path.join(adir, realm)
-            if not os.path.isdir(rpath) or realm == "SavedVariables":
+def _addon_src_dir():
+    """Folder holding the bundled addon source (Interface/AddOns/WowManager)."""
+    for base in (os.path.dirname(os.path.abspath(sys.argv[0])),
+                 os.path.dirname(os.path.abspath(sys.executable)),
+                 os.path.dirname(os.path.abspath(__file__))
+                 if "__file__" in globals() else "."):
+        cand = os.path.join(base, "addon", ADDON_NAME)
+        if os.path.isdir(cand):
+            return cand
+    return None
+
+
+def _lua_str(s):
+    return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def deploy_addon(wow_dir, enabled, show_minimap, characters=None,
+                 hover_card=True, card_fields=None, card_labels=None):
+    """Copy the WowManager addon into the game (or remove it). Writes Config.lua
+    with the minimap-overlay flag, the hover-card flag and the manager's
+    character list — including each character's class colour and a snapshot of
+    its collected info — so the in-game relog menu can colour names by class and
+    show the same hover card as the desktop app. Best-effort."""
+    dst = os.path.join(wow_dir, "Interface", "AddOns", ADDON_NAME)
+    if not enabled:
+        shutil.rmtree(dst, ignore_errors=True)
+        return
+    src = _addon_src_dir()
+    if not src:
+        return
+    try:
+        os.makedirs(dst, exist_ok=True)
+        for fn in ("WowManager.toc", "Core.lua"):
+            sp = os.path.join(src, fn)
+            if os.path.isfile(sp):
+                shutil.copy2(sp, os.path.join(dst, fn))
+        lines = ["WowManagerConfig = {",
+                 "    showMinimap = %s," % ("true" if show_minimap else "false"),
+                 "    hoverCard = %s," % ("true" if hover_card else "false"),
+                 "    characters = {"]
+        for c in (characters or []):
+            nm = (c.get("name") or "").strip()
+            acc = (c.get("account") or "").strip()
+            label = nm or acc           # account-only entries show the account
+            if not label:
                 continue
-            for ch in os.listdir(rpath):
-                if character and ch.lower() != character.lower():
-                    continue
-                csv = os.path.join(rpath, ch, "SavedVariables")
-                if os.path.isdir(csv):
-                    files += [os.path.join(csv, f) for f in os.listdir(csv)
-                              if f.lower().endswith(".lua")]
-    return files
+            is_account = "true" if not nm else "false"
+            color = CLASS_COLORS.get(c.get("class", ""), "").lstrip("#").lower()
+            info = card_lines(c, card_fields, card_labels) if nm else []
+            info_lua = "{ %s }" % ", ".join(_lua_str(s) for s in info)
+            lines.append(
+                "        { name = %s, account = %s, isAccount = %s, "
+                "color = %s, info = %s },"
+                % (_lua_str(label), _lua_str(acc), is_account,
+                   _lua_str(color), info_lua))
+        lines += ["    },", "}", ""]
+        with open(os.path.join(dst, "Config.lua"), "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+    except OSError:
+        pass
 
 
-def read_gearscore(wow_dir, account, character):
-    """Return a plausible GearScore int parsed from SavedVariables, or None."""
-    best = None
-    for fp in _gs_candidate_files(wow_dir, account, character):
+# ── minimal Lua-table (SavedVariables) parser ──────────────────────────────────
+
+class _LuaReader:
+    def __init__(self, s):
+        self.s, self.i, self.n = s, 0, len(s)
+
+    def _skip(self):
+        s, n = self.s, self.n
+        while self.i < n:
+            c = s[self.i]
+            if c in " \t\r\n":
+                self.i += 1
+            elif s.startswith("--", self.i):
+                if s.startswith("--[[", self.i):
+                    e = s.find("]]", self.i + 4)
+                    self.i = e + 2 if e >= 0 else n
+                else:
+                    nl = s.find("\n", self.i)
+                    self.i = nl + 1 if nl >= 0 else n
+            else:
+                break
+
+    def value(self):
+        self._skip()
+        if self.i >= self.n:
+            return None
+        c = self.s[self.i]
+        if c == "{":
+            return self._table()
+        if c in "\"'":
+            return self._string()
+        return self._scalar()
+
+    def _string(self):
+        q = self.s[self.i]; self.i += 1; out = []
+        while self.i < self.n:
+            c = self.s[self.i]
+            if c == "\\" and self.i + 1 < self.n:
+                nxt = self.s[self.i + 1]
+                out.append({"n": "\n", "t": "\t", "r": "\r"}.get(nxt, nxt))
+                self.i += 2
+            elif c == q:
+                self.i += 1; break
+            else:
+                out.append(c); self.i += 1
+        return "".join(out)
+
+    def _scalar(self):
+        j = self.i
+        while self.i < self.n and self.s[self.i] not in ",}=]\r\n \t":
+            self.i += 1
+        tok = self.s[j:self.i].strip()
+        if tok == "true":  return True
+        if tok == "false": return False
+        if tok == "nil":   return None
+        try:    return int(tok)
+        except ValueError:
+            try:    return float(tok)
+            except ValueError: return tok
+
+    def _table(self):
+        self.i += 1  # consume {
+        result, array = {}, []
+        while True:
+            self._skip()
+            if self.i >= self.n or self.s[self.i] == "}":
+                self.i += 1
+                break
+            if self.s[self.i] == "[":                       # ["key"]= or [n]=
+                self.i += 1
+                k = self.value()
+                self._skip()
+                if self.i < self.n and self.s[self.i] == "]":
+                    self.i += 1
+                self._skip()
+                if self.i < self.n and self.s[self.i] == "=":
+                    self.i += 1
+                result[k] = self.value()
+            else:
+                m = re.match(r"[A-Za-z_]\w*", self.s[self.i:])
+                if m:
+                    j = self.i + m.end()
+                    k2 = m.group(0)
+                    while j < self.n and self.s[j] in " \t":
+                        j += 1
+                    if (j < self.n and self.s[j] == "="
+                            and (j + 1 >= self.n or self.s[j + 1] != "=")):
+                        self.i = j + 1
+                        result[k2] = self.value()
+                        self._after_item()
+                        continue
+                array.append(self.value())
+            self._after_item()
+        if array and not result:
+            return array
+        for idx, v in enumerate(array, 1):
+            result[idx] = v
+        return result
+
+    def _after_item(self):
+        self._skip()
+        if self.i < self.n and self.s[self.i] in ",;":
+            self.i += 1
+
+
+def parse_lua_savedvars(text):
+    """Parse top-level `Name = {…}` assignments into a dict of name -> value."""
+    out = {}
+    for m in re.finditer(r"(?m)^(\w+)\s*=\s*", text):
+        r = _LuaReader(text)
+        r.i = m.end()
         try:
-            with open(fp, "r", encoding="utf-8", errors="ignore") as fh:
-                text = fh.read()
+            out[m.group(1)] = r.value()
+        except Exception:
+            pass
+    return out
+
+
+def read_ingame_data(wow_dir, account):
+    """Read WowManagerDB from the addon's account-wide SavedVariables. Returns
+    {character_name_lower: data}. Empty if the addon hasn't run yet."""
+    if not (wow_dir and account):
+        return {}
+    base = os.path.join(wow_dir, "WTF", "Account")
+    out = {}
+    try:
+        accs = [d for d in os.listdir(base)
+                if d.upper() == account.strip().upper()]
+    except OSError:
+        return {}
+    for acc in accs:
+        sv = os.path.join(base, acc, "SavedVariables", ADDON_SV_FILE)
+        if not os.path.isfile(sv):
+            continue
+        try:
+            with open(sv, "r", encoding="utf-8", errors="ignore") as f:
+                data = parse_lua_savedvars(f.read())
         except OSError:
             continue
-        # If we know the character, prefer text near its name
-        regions = [text]
-        if character:
-            i = text.lower().find(character.lower())
-            if i >= 0:
-                regions = [text[max(0, i - 400): i + 400], text]
-        for region in regions:
-            for pat in _GS_PATTERNS:
-                for m in pat.finditer(region):
-                    val = int(m.group(1))
-                    if 1000 <= val <= 7000:      # plausible WotLK GS range
-                        best = max(best or 0, val)
-            if best:
-                break
-    return best
+        db = data.get("WowManagerDB")
+        if isinstance(db, dict):
+            for key, rec in db.items():
+                if isinstance(rec, dict) and rec.get("name"):
+                    out[str(rec["name"]).lower()] = rec
+    return out
+
+
+def read_relog_request(wow_dir, account):
+    """Return (char_name, at_epoch) of a pending overlay relog request, or
+    (None, 0). Stored by the addon as WowManagerDB.__relog."""
+    if not (wow_dir and account):
+        return None, 0
+    base = os.path.join(wow_dir, "WTF", "Account")
+    try:
+        accs = [d for d in os.listdir(base)
+                if d.upper() == account.strip().upper()]
+    except OSError:
+        return None, 0
+    for acc in accs:
+        sv = os.path.join(base, acc, "SavedVariables", ADDON_SV_FILE)
+        if not os.path.isfile(sv):
+            continue
+        try:
+            with open(sv, "r", encoding="utf-8", errors="ignore") as f:
+                data = parse_lua_savedvars(f.read())
+        except OSError:
+            continue
+        db = data.get("WowManagerDB")
+        if isinstance(db, dict):
+            req = db.get("__relog")
+            if isinstance(req, dict) and req.get("char"):
+                return str(req["char"]), int(req.get("at") or 0)
+    return None, 0
+
+
+def is_wow_running():
+    """True if a Wow.exe process is currently running (Windows)."""
+    if sys.platform != "win32":
+        return False
+    try:
+        TH32CS_SNAPPROCESS = 0x2
+
+        class PROCESSENTRY32(ctypes.Structure):
+            _fields_ = [("dwSize", ctypes.c_ulong),
+                        ("cntUsage", ctypes.c_ulong),
+                        ("th32ProcessID", ctypes.c_ulong),
+                        ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+                        ("th32ModuleID", ctypes.c_ulong),
+                        ("cntThreads", ctypes.c_ulong),
+                        ("th32ParentProcessID", ctypes.c_ulong),
+                        ("pcPriClassBase", ctypes.c_long),
+                        ("dwFlags", ctypes.c_ulong),
+                        ("szExeFile", ctypes.c_char * 260)]
+
+        k = ctypes.windll.kernel32
+        snap = k.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if snap == -1:
+            return False
+        entry = PROCESSENTRY32()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32)
+        found = False
+        if k.Process32First(snap, ctypes.byref(entry)):
+            while True:
+                if entry.szExeFile.lower() == b"wow.exe":
+                    found = True
+                    break
+                if not k.Process32Next(snap, ctypes.byref(entry)):
+                    break
+        k.CloseHandle(snap)
+        return found
+    except Exception:
+        return False
+
+
+def fmt_gold(copper):
+    """Copper int → 'Ng Ms Кc'."""
+    try:
+        copper = int(copper)
+    except (TypeError, ValueError):
+        return ""
+    g, rem = divmod(copper, 10000)
+    s, c = divmod(rem, 100)
+    if g:
+        return f"{g:,}g {s}s".replace(",", " ")
+    if s:
+        return f"{s}s {c}c"
+    return f"{c}c"
+
+
+def _fmt_dhm(secs):
+    d, rem = divmod(max(0, int(secs)), 86400)
+    h, rem = divmod(rem, 3600)
+    m = rem // 60
+    if LANG == "en":
+        return (f"{d}d " if d else "") + f"{h}h {m}m"
+    return (f"{d}д " if d else "") + f"{h}ч {m}м"
+
+
+def _fmt_played(secs):
+    try:
+        secs = int(secs)
+    except (TypeError, ValueError):
+        return ""
+    d, rem = divmod(secs, 86400)
+    h = rem // 3600
+    if LANG == "en":
+        return f"{d}d {h}h"
+    return f"{d}д {h}ч"
 
 
 # ── WTF / AddOns backup ────────────────────────────────────────────────────────
@@ -947,7 +1467,7 @@ def _dump_loader_controls(parent, target_text):
         with open(os.path.join(log_dir, "loader_debug.txt"),
                   "w", encoding="utf-8") as fh:
             fh.write(f"Искал кнопку с текстом: {target_text!r}\n")
-            fh.write(f"Не найдено. Список всех контролов окна:\n\n")
+            fh.write("Не найдено. Список всех контролов окна:\n\n")
             fh.write("\n".join(rows))
     except Exception:
         pass
@@ -1112,6 +1632,15 @@ def launch_wow(cfg, char, on_error=None):
     deploy_patch(wow_dir)
     update_realmlist(wow_dir, realmlist)
 
+    # Deploy (or remove) the data-collector / overlay addon based on settings
+    addon_on = bool(cfg.get("hover_card", True) or cfg.get("overlay", False))
+    deploy_addon(wow_dir, addon_on,
+                 show_minimap=bool(cfg.get("overlay", False)),
+                 characters=cfg.get("characters", []),
+                 hover_card=bool(cfg.get("hover_card", True)),
+                 card_fields=cfg.get("card_fields"),
+                 card_labels=cfg.get("card_labels"))
+
     # Optional: snapshot WTF + AddOns in the background (throttled, ring-buffered)
     if cfg.get("backup_wtf"):
         dest_root = _backup_dest_root(cfg, wow_dir)
@@ -1126,7 +1655,7 @@ def launch_wow(cfg, char, on_error=None):
     # Always write autologin.json so the DLL has params no matter who launches Wow.
     _write_autologin_json(wow_dir, char, realmlist)
 
-    if (cfg.get("loader_path") or "").strip():
+    if cfg.get("use_loader") and (cfg.get("loader_path") or "").strip():
         _launch_via_loader(cfg, wow_dir, on_error=on_error)
         return
 
@@ -1146,13 +1675,13 @@ def _row_colors(class_color):
     white based on the resulting background's luminance for readability."""
     r, g, b = (int(class_color[1:3], 16), int(class_color[3:5], 16),
                int(class_color[5:7], 16))
-    if CURRENT_THEME == "dark":
+    if CURRENT_THEME in ("dark", "wow"):
         tr, tg, tb = (int(PANEL[1:3], 16), int(PANEL[3:5], 16),
                       int(PANEL[5:7], 16))
-        a = 0.55          # 55% class hue on dark panel
+        a = 0.34          # subtle class hue on dark panel
     else:
         tr, tg, tb = 255, 255, 255
-        a = 0.50          # 50% class hue on white
+        a = 0.28          # subtle class hue on white — keeps text readable
     br = int(r * a + tr * (1 - a))
     bg = int(g * a + tg * (1 - a))
     bb = int(b * a + tb * (1 - a))
@@ -1233,6 +1762,77 @@ def decrypt_secret(stored):
 _SECRET_FIELDS = ("password", "totp_secret")
 
 
+# ── system-clock drift (TOTP depends on it) ────────────────────────────────────
+
+def ntp_offset(hosts=("pool.ntp.org", "time.windows.com", "time.google.com"),
+               timeout=3):
+    """Seconds the local clock is OFF from real (NTP) time. Positive = the PC
+    is behind. Returns None if no NTP server could be reached."""
+    NTP_EPOCH = 2208988800  # seconds between 1900-01-01 and 1970-01-01
+    packet = b"\x1b" + 47 * b"\0"
+    for host in hosts:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(timeout)
+            t0 = time.time()
+            s.sendto(packet, (host, 123))
+            data, _ = s.recvfrom(48)
+            t3 = time.time()
+            s.close()
+            if len(data) < 48:
+                continue
+            transmit = struct.unpack("!12I", data)[10]
+            server_time = transmit - NTP_EPOCH
+            return server_time - (t0 + t3) / 2.0   # midpoint cancels round-trip
+        except Exception:
+            continue
+    return None
+
+
+def open_time_settings():
+    """Open the Windows date/time settings page so the user can sync."""
+    try:
+        if sys.platform == "win32":
+            os.startfile("ms-settings:dateandtime")  # noqa
+        return True
+    except Exception:
+        try:
+            subprocess.Popen(["control", "timedate.cpl"])
+            return True
+        except Exception:
+            return False
+
+
+# ── update check (GitHub Releases) ─────────────────────────────────────────────
+
+def _ver_tuple(s):
+    out = []
+    for part in str(s).strip().lstrip("vV").split("."):
+        num = "".join(ch for ch in part if ch.isdigit())
+        out.append(int(num) if num else 0)
+    return tuple(out) or (0,)
+
+
+def check_latest_version():
+    """Return (tag, html_url) of the latest GitHub release, or (None, None)."""
+    try:
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+            headers={"User-Agent": "WowManager",
+                     "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            data = json.load(r)
+        return data.get("tag_name"), data.get("html_url")
+    except Exception:
+        return None, None
+
+
+def is_update_available(latest_tag):
+    if not latest_tag:
+        return False
+    return _ver_tuple(latest_tag) > _ver_tuple(__version__)
+
+
 # ── App ───────────────────────────────────────────────────────────────────────
 
 class App:
@@ -1243,10 +1843,12 @@ class App:
         set_lang(self.cfg.get("lang", "ru"))
         self.search_var = tk.StringVar()
         self.count_var  = tk.StringVar()
-        self._sort_state = (None, False)  # (column, reverse)
         self._tray_icon = None
+        self._banners = {}   # kind -> dict(text, action_label, action, accent)
+        self._card = None
+        self._card_row = None
         root.title(APP_TITLE)
-        root.geometry(f"{WIN_W}x{WIN_H}")
+        root.geometry(self.cfg.get("win_geometry") or f"{WIN_W}x{WIN_H}")
         root.minsize(780, 480)
         root.configure(bg=BG)
         # Hide-to-tray on close, real exit via tray menu
@@ -1257,6 +1859,123 @@ class App:
             pass
         self.build()
         self._setup_tray()
+        self._start_background_checks()
+
+    # ── top banners (clock drift, updates) ──────────────────────────────────
+
+    def _add_banner(self, kind, text, action_label=None, action=None,
+                    accent="#F4C24B"):
+        self._banners[kind] = dict(text=text, action_label=action_label,
+                                   action=action, accent=accent)
+        self.root.after(0, self._render_banners)
+
+    def _dismiss_banner(self, kind):
+        self._banners.pop(kind, None)
+        self._render_banners()
+
+    def _render_banners(self):
+        area = getattr(self, "_banner_area", None)
+        if not area or not area.winfo_exists():
+            return
+        for w in area.winfo_children():
+            w.destroy()
+        for kind, b in list(self._banners.items()):
+            row = tk.Frame(area, bg=b["accent"])
+            row.pack(fill="x")
+            tk.Label(row, text=b["text"], bg=b["accent"], fg="#171717",
+                     font=("Segoe UI", 9, "bold"), anchor="w"
+                     ).pack(side="left", padx=(14, 8), pady=6)
+            tk.Button(row, text="✕", bg=b["accent"], fg="#171717",
+                      relief="flat", bd=0, padx=8,
+                      command=lambda k=kind: self._dismiss_banner(k)
+                      ).pack(side="right", padx=(0, 8))
+            if b["action_label"] and b["action"]:
+                tk.Button(row, text=b["action_label"], bg="#171717",
+                          fg=b["accent"], relief="flat", padx=12, pady=2,
+                          cursor="hand2", command=b["action"]
+                          ).pack(side="right", padx=(0, 4), pady=4)
+
+    def _start_background_checks(self):
+        # Clock drift — TOTP auto-submit silently fails when the PC clock is off
+        def _clock():
+            off = ntp_offset()
+            if off is not None and abs(off) > TIME_DRIFT_WARN_SEC:
+                self._add_banner(
+                    "time",
+                    t("⚠ Часы ПК расходятся на {n} сек — автоввод 2FA может "
+                      "не работать.").format(n=int(abs(off))),
+                    t("Синхронизировать время"),
+                    lambda: open_time_settings(),
+                    accent="#F4C24B")
+
+        # Update check — notify when a newer GitHub release exists
+        def _update():
+            tag, url = check_latest_version()
+            if is_update_available(tag):
+                self._add_banner(
+                    "update",
+                    t("Доступна новая версия {v}").format(v=tag),
+                    t("Скачать обновление"),
+                    lambda u=(url or RELEASES_URL): webbrowser.open(u),
+                    accent="#7FB7E8")
+
+        threading.Thread(target=_clock, daemon=True).start()
+        threading.Thread(target=_update, daemon=True).start()
+        threading.Thread(target=self._refresh_ingame, daemon=True).start()
+        # Re-read in-game data when the window regains focus (after playing)
+        self.root.bind("<FocusIn>", self._on_focus_in)
+        # Overlay relog watcher
+        self._relog_seen = int(time.time())
+        threading.Thread(target=self._relog_watcher, daemon=True).start()
+
+    def _relog_watcher(self):
+        """Poll the addon for an overlay relog request; once Wow.exe has closed,
+        relaunch the chosen character through the manager."""
+        while True:
+            time.sleep(3)
+            try:
+                if not self.cfg.get("overlay"):
+                    continue
+                wow = self.cfg.get("wow_path", "")
+                if not wow or not os.path.isdir(wow):
+                    continue
+                accounts = {(c.get("account") or "").strip()
+                            for c in self.cfg.get("characters", [])}
+                target, at = None, 0
+                for a in accounts:
+                    if not a:
+                        continue
+                    tch, tat = read_relog_request(wow, a)
+                    if tch and tat > at:
+                        target, at = tch, tat
+                if target and at > self._relog_seen and not is_wow_running():
+                    self._relog_seen = at
+                    self.root.after(0, lambda c=target: self.launch_by_value(c))
+            except Exception:
+                pass
+
+    def _on_focus_in(self, _e=None):
+        if getattr(self, "_ig_refreshing", False):
+            return
+        self._ig_refreshing = True
+        threading.Thread(target=self._refresh_ingame, daemon=True).start()
+
+    def _refresh_ingame(self):
+        """Reload the addon's collected data for all accounts into INGAME."""
+        try:
+            wow = self.cfg.get("wow_path", "")
+            if wow and os.path.isdir(wow):
+                accounts = {(c.get("account") or "").strip()
+                            for c in self.cfg.get("characters", [])}
+                fresh = {}
+                for a in accounts:
+                    if a:
+                        fresh.update(read_ingame_data(wow, a))
+                INGAME.clear()
+                INGAME.update(fresh)
+                self.root.after(0, self.render_rows)
+        finally:
+            self._ig_refreshing = False
 
     def _apply_ttk_styles(self):
         st = ttk.Style()
@@ -1267,9 +1986,10 @@ class App:
         st.configure("Treeview",
                      background=PANEL, foreground=TEXT,
                      fieldbackground=PANEL, borderwidth=0, rowheight=22)
+        # Barely-visible separators between column headers only
         st.configure("Treeview.Heading",
-                     background=BORDER, foreground=TEXT, borderwidth=0,
-                     relief="flat", font=("Segoe UI", 9, "bold"))
+                     background=BORDER, foreground=TEXT, borderwidth=1,
+                     relief="groove", font=("Segoe UI", 9, "bold"))
         # Selection reads as a darkening of the row, not a colour fill
         st.map("Treeview",
                background=[("selected", SEL_BG)],
@@ -1277,7 +1997,18 @@ class App:
         st.map("Treeview.Heading",
                background=[("active", BORDER)])
 
+    def _save_window_state(self):
+        try:
+            self.cfg["win_geometry"] = self.root.geometry()
+            if getattr(self, "_acc_in_pane", False):
+                self.cfg["sash_pos"] = self._paned.sashpos(0)
+            save_cfg(self.cfg)
+        except Exception:
+            pass
+
     def rebuild(self):
+        self._save_window_state()
+        self._hide_card()
         for w in self.root.winfo_children():
             w.destroy()
         self.root.configure(bg=BG)
@@ -1285,6 +2016,11 @@ class App:
 
     def build(self):
         self._apply_ttk_styles()
+
+        # Banner strip at the very top (clock-drift / update notices)
+        self._banner_area = tk.Frame(self.root, bg=BG)
+        self._banner_area.pack(fill="x", side="top")
+        self._render_banners()
 
         toolbar = tk.Frame(self.root, bg=BG)
         toolbar.pack(fill="x", padx=16, pady=(14, 8))
@@ -1308,51 +2044,97 @@ class App:
                   relief="flat", padx=14, pady=7, command=self.settings
                   ).pack(side="right")
 
-        table_wrap = tk.Frame(self.root, bg=PANEL,
-                              highlightbackground=BORDER, highlightthickness=1)
-        table_wrap.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+        # ── Characters table (configurable columns) ──────────────────────────
+        self._cols = [c for c in self.cfg.get("columns", DEFAULT_COLUMNS)
+                      if c] or list(DEFAULT_COLUMNS)
+        labels = self.cfg.get("column_labels", {})
+        widths = self.cfg.get("column_widths", {})
 
-        # Hierarchical tree: two group rows ("Персонажи" / "Аккаунты") with the
-        # entries nested under them. #0 (tree column) holds the character name.
-        cols = ("class", "gs", "account", "realm", "realmlist")
-        self.tree = ttk.Treeview(table_wrap, columns=cols, show="tree headings",
-                                 selectmode="browse")
-        self.tree.heading("#0", text=t("Персонаж"),
-                          command=lambda: self._sort_by("name"))
-        self.tree.column("#0", width=180, anchor="w")
-        headings = (("class",     t("Класс"),    110, "w"),
-                    ("gs",        t("ГС"),         60, "center"),
-                    ("account",   t("Аккаунт"),  110, "w"),
-                    ("realm",     t("Реалм"),    210, "w"),
-                    ("realmlist", t("Realmlist"),160, "w"))
-        for col, label, w, anchor in headings:
-            self.tree.heading(col, text=label,
-                              command=lambda c=col: self._sort_by(c))
-            self.tree.column(col, width=w, anchor=anchor)
+        # Vertical paned window → the divider between the two tables can be
+        # dragged to resize the accounts table.
+        paned = ttk.PanedWindow(self.root, orient="vertical")
+        paned.pack(fill="both", expand=True, padx=16, pady=(0, 6))
+        self._paned = paned
+
+        table_wrap = tk.Frame(paned, bg=PANEL,
+                              highlightbackground=BORDER, highlightthickness=1)
+        paned.add(table_wrap, weight=4)
+
+        self.tree = ttk.Treeview(table_wrap, columns=tuple(self._cols),
+                                 show="headings", selectmode="browse")
+        for col in self._cols:
+            default_label, w, anchor, _getter = col_meta(col)
+            self.tree.heading(col, text=(labels.get(col) or t(default_label)))
+            self.tree.column(col, width=int(widths.get(col, w)), anchor=anchor,
+                             stretch=False)
         self.tree.pack(side="left", fill="both", expand=True)
+        self.tree.bind("<Configure>", self._fit_columns)
         self.tree.bind("<Double-1>", self._on_activate)
         self.tree.bind("<Return>",   self._on_activate)
-        # Drag-and-drop reordering (within the same group)
         self._drag_iid = None
         self._drag_moved = False
         self.tree.bind("<ButtonPress-1>",   self._on_drag_start)
         self.tree.bind("<B1-Motion>",       self._on_drag_motion)
         self.tree.bind("<ButtonRelease-1>", self._on_drag_drop)
+        self._card = None
+        self._card_row = None
+        self.tree.bind("<Motion>", self._on_tree_motion)
+        self.tree.bind("<Leave>",  lambda _e: self._hide_card())
+        self.tree.bind("<ButtonPress-1>", lambda _e: self._hide_card(), add="+")
+        self.tree.bind("<Button-1>",
+                       lambda e: self._table_click(self.tree, e), add="+")
+        # Focus-follows-mouse: the table under the cursor becomes active right
+        # away, so a single click selects a row (no "activating" first click).
+        self.tree.bind("<Enter>", lambda _e: self._activate_table(self.tree))
+        self.tree.bind("<<TreeviewSelect>>",
+                       lambda _e: self._strip_focus_ring(self.tree), add="+")
+        self.tree.bind("<ButtonRelease-1>", self._save_col_widths, add="+")
 
         for cls, color in CLASS_COLORS.items():
             bg_, fg_ = _row_colors(color)
             self.tree.tag_configure(f"cls_{cls}",
                                     background=bg_, foreground=fg_)
-        # Group header rows: bold-ish, muted background, not class-tinted
-        self.tree.tag_configure("group", background=BORDER, foreground=TEXT)
 
         sb = ttk.Scrollbar(table_wrap, orient="vertical",
                            command=self.tree.yview)
         sb.pack(side="right", fill="y")
         self.tree.configure(yscrollcommand=sb.set)
 
+        # ── Accounts table (separate pane: login / realm / server) ────────────
+        # Added to / removed from the paned window in render_rows.
+        self._acc_cols = ("account", "realm", "realmlist")
+        acc_wrap = tk.Frame(paned, bg=PANEL,
+                            highlightbackground=BORDER, highlightthickness=1)
+        self._acc_wrap = acc_wrap
+        self._acc_in_pane = False
+        self._sash_restored = False
+        self.acc_tree = ttk.Treeview(acc_wrap, columns=self._acc_cols,
+                                     show="headings", selectmode="browse",
+                                     height=6)
+        self.acc_tree.heading("account",   text=t("Аккаунт"))
+        self.acc_tree.heading("realm",     text=t("Реалм"))
+        self.acc_tree.heading("realmlist", text=t("Realmlist"))
+        self.acc_tree.column("account",   width=160, anchor="w")
+        self.acc_tree.column("realm",     width=240, anchor="w")
+        self.acc_tree.column("realmlist", width=180, anchor="w", stretch=True)
+        self.acc_tree.pack(side="left", fill="both", expand=True)
+        self.acc_tree.bind("<Double-1>", self._on_activate)
+        self.acc_tree.bind("<Return>",   self._on_activate)
+        self.acc_tree.bind("<Button-1>",
+                           lambda e: self._table_click(self.acc_tree, e), add="+")
+        self.acc_tree.bind("<Enter>",
+                           lambda _e: self._activate_table(self.acc_tree))
+        self.acc_tree.bind("<<TreeviewSelect>>",
+                           lambda _e: self._strip_focus_ring(self.acc_tree),
+                           add="+")
+        acc_sb = ttk.Scrollbar(acc_wrap, orient="vertical",
+                               command=self.acc_tree.yview)
+        acc_sb.pack(side="right", fill="y")
+        self.acc_tree.configure(yscrollcommand=acc_sb.set)
+
         bottom = tk.Frame(self.root, bg=BG)
-        bottom.pack(fill="x", padx=16, pady=(0, 14))
+        bottom.pack(fill="x", padx=16, pady=(4, 10))
+        self._bottom = bottom
 
         tk.Label(bottom, textvariable=self.count_var, bg=BG, fg=MUTED,
                  font=("Segoe UI", 9)).pack(side="left")
@@ -1361,34 +2143,116 @@ class App:
         _hyperlink(bottom, TELEGRAM_HANDLE, TELEGRAM_URL, bg=BG
                    ).pack(side="left", padx=(2, 0))
 
-        tk.Button(bottom, text=t("Запустить выбранного"), bg=ACCENT,
-                  fg="#171717", relief="flat", padx=18, pady=8,
-                  command=self.launch_selected).pack(side="right")
+        # Theme + language switchers (live here, not in Settings)
+        lang_var = tk.StringVar(value=LANG)
+        theme_var = tk.StringVar(value=CURRENT_THEME)
+
+        def _on_lang(_e=None):
+            new = lang_var.get()
+            if new != self.cfg.get("lang"):
+                self.cfg["lang"] = new
+                save_cfg(self.cfg)
+                set_lang(new)
+                self.rebuild()
+
+        def _on_theme(_e=None):
+            new = theme_var.get()
+            if new != self.cfg.get("theme"):
+                self.cfg["theme"] = new
+                save_cfg(self.cfg)
+                apply_theme(new)
+                self.rebuild()
+
+        lang_cb = ttk.Combobox(bottom, textvariable=lang_var,
+                               values=("ru", "en"), state="readonly",
+                               width=4, font=("Segoe UI", 9))
+        lang_cb.pack(side="right", padx=(8, 12))
+        lang_cb.bind("<<ComboboxSelected>>", _on_lang)
+        tk.Label(bottom, text=t("Язык:"), bg=BG, fg=MUTED,
+                 font=("Segoe UI", 9)).pack(side="right")
+
+        theme_cb = ttk.Combobox(bottom, textvariable=theme_var,
+                                values=("light", "dark", "wow"),
+                                state="readonly", width=6, font=("Segoe UI", 9))
+        theme_cb.pack(side="right", padx=(8, 14))
+        theme_cb.bind("<<ComboboxSelected>>", _on_theme)
+        tk.Label(bottom, text=t("Тема:"), bg=BG, fg=MUTED,
+                 font=("Segoe UI", 9)).pack(side="right")
 
         self.render_rows()
 
-    # ── sort/reorder ──────────────────────────────────────────────────────────
+    def _fit_columns(self, _e=None):
+        """Auto-fit columns to the table width: shrink proportionally when the
+        configured widths would overflow, else give spare space to the last
+        column. Display-only — does not change the saved widths."""
+        try:
+            avail = self.tree.winfo_width()
+            if avail <= 1 or not self._cols:
+                return
+            wcfg = self.cfg.get("column_widths", {})
+            desired = [int(wcfg.get(c, col_meta(c)[1])) for c in self._cols]
+            total = sum(desired)
+            if total <= avail:
+                extra = avail - total
+                for i, col in enumerate(self._cols):
+                    w = desired[i] + (extra if i == len(self._cols) - 1 else 0)
+                    self.tree.column(col, width=w)
+            else:
+                scale = avail / total
+                for i, col in enumerate(self._cols):
+                    self.tree.column(col, width=max(28, int(desired[i] * scale)))
+        except Exception:
+            pass
 
-    def _sort_by(self, col):
-        prev_col, prev_rev = self._sort_state
-        rev = (prev_col == col) and not prev_rev
-        self._sort_state = (col, rev)
+    def _save_col_widths(self, _e=None):
+        """Persist column widths only when the user dragged a heading edge."""
+        if not getattr(self, "_resizing", False):
+            return
+        self._resizing = False
+        try:
+            widths = dict(self.cfg.get("column_widths", {}))
+            changed = False
+            for col in self._cols:
+                cur = self.tree.column(col, "width")
+                if widths.get(col) != cur:
+                    widths[col] = cur; changed = True
+            if changed:
+                self.cfg["column_widths"] = widths
+                save_cfg(self.cfg)
+        except Exception:
+            pass
 
-        def _key(c):
-            v = c.get(col, "")
-            if col == "gs":
-                try:    return int("".join(ch for ch in str(v) if ch.isdigit()) or 0)
-                except: return 0
+    # ── sort key (configured in the columns constructor) ────────────────────
+
+    def _sorted_items(self, items):
+        """Apply the configured default sort to (idx, char) pairs, if any."""
+        srt = self.cfg.get("sort") or {}
+        col = srt.get("col")
+        if not col:
+            return items
+        numeric = col in IG_NUMERIC or col == "gold" or col.startswith("cur:")
+
+        def _key(pair):
+            c = pair[1]
+            if col == "name":
+                v = c.get("name", "")
+            elif col in STATIC_COLUMNS:
+                v = c.get(col, "")
+            else:
+                v = col_meta(col)[3](c)
+            if numeric:
+                digits = "".join(ch for ch in str(v) if ch.isdigit())
+                return int(digits) if digits else 0
             return str(v).lower()
-        self.cfg["characters"].sort(key=_key, reverse=rev)
-        save_cfg(self.cfg)
-        self.render_rows()
+        return sorted(items, key=_key, reverse=bool(srt.get("reverse")))
 
     # ── drag-and-drop reorder ───────────────────────────────────────────────
 
     def _on_drag_start(self, e):
+        # heading-edge drag = column resize (so we persist widths on release)
+        self._resizing = (self.tree.identify_region(e.x, e.y) == "separator")
         iid = self.tree.identify_row(e.y)
-        self._drag_iid = iid if (iid and not iid.startswith("grp_")) else None
+        self._drag_iid = iid or None
         self._drag_moved = False
 
     def _on_drag_motion(self, e):
@@ -1396,35 +2260,32 @@ class App:
         if not src:
             return
         tgt = self.tree.identify_row(e.y)
-        if not tgt or tgt.startswith("grp_") or tgt == src:
-            return
-        # Only reorder within the same group (same parent node)
-        if self.tree.parent(tgt) != self.tree.parent(src):
+        if not tgt or tgt == src:
             return
         # Live-move the row to the target position for instant feedback
-        self.tree.move(src, self.tree.parent(src), self.tree.index(tgt))
+        self.tree.move(src, "", self.tree.index(tgt))
         self._drag_moved = True
 
     def _on_drag_drop(self, _e):
-        # Only persist when an actual drag happened — a plain click must not
-        # trigger a save/re-render.
         if not self._drag_iid or not self._drag_moved:
             self._drag_iid = None
             return
         self._drag_iid = None
         self._drag_moved = False
-        # Rebuild cfg["characters"] to match the current visual order. iids
-        # still hold the original cfg indices until we re-render.
-        new_order = []
-        for grp in self.tree.get_children(""):
-            for leaf in self.tree.get_children(grp):
-                new_order.append(int(leaf))
-        if not new_order:
+        # Reorder character entries to match the visual order; keep account
+        # entries (in the separate table) in their original positions.
+        visual = [int(iid) for iid in self.tree.get_children("")]
+        if not visual:
             return
-        chars = self.cfg["characters"]
-        self.cfg["characters"] = [chars[i] for i in new_order]
+        chars_list = self.cfg["characters"]
+        char_positions = [i for i, c in enumerate(chars_list)
+                          if str(c.get("name", "")).strip()]
+        reordered = [chars_list[i] for i in visual]
+        result = list(chars_list)
+        for pos, c in zip(char_positions, reordered):
+            result[pos] = c
+        self.cfg["characters"] = result
         save_cfg(self.cfg)
-        self._sort_state = (None, False)
         self.render_rows()
 
     def filtered(self):
@@ -1444,45 +2305,254 @@ class App:
     def render_rows(self):
         for it in self.tree.get_children():
             self.tree.delete(it)
+        for it in self.acc_tree.get_children():
+            self.acc_tree.delete(it)
 
         chars, accounts = [], []
-        for idx, c in self.filtered():
+        for idx, c in self._sorted_items(self.filtered()):
             if str(c.get("name", "")).strip():
                 chars.append((idx, c))
             else:
                 accounts.append((idx, c))
 
-        def add_leaf(parent, idx, c):
+        for idx, c in chars:
             tag = f"cls_{c.get('class', '')}"
-            label = c.get("name", "") or c.get("account", "")
-            self.tree.insert(parent, "end", iid=str(idx), text=label, values=(
-                class_disp(c.get("class", "")),
-                c.get("gs", ""), c.get("account", ""),
-                c.get("realm", ""), c.get("realmlist", "")), tags=(tag,))
+            values = tuple(col_meta(col)[3](c) for col in self._cols)
+            self.tree.insert("", "end", iid=str(idx), values=values, tags=(tag,))
 
-        # Accounts block first, then characters
+        for idx, c in accounts:
+            self.acc_tree.insert("", "end", iid=str(idx), values=(
+                c.get("account", ""), c.get("realm", ""),
+                c.get("realmlist", "")))
+
+        # Show the accounts pane only when there are account-only entries.
         if accounts:
-            self.tree.insert("", "end", iid="grp_acc", open=True,
-                             text=t("Аккаунты"), tags=("group",))
-            for idx, c in accounts:
-                add_leaf("grp_acc", idx, c)
-        if chars:
-            self.tree.insert("", "end", iid="grp_char", open=True,
-                             text=t("Персонажи"), tags=("group",))
-            for idx, c in chars:
-                add_leaf("grp_char", idx, c)
+            if not self._acc_in_pane:
+                self._paned.add(self._acc_wrap, weight=1)
+                self._acc_in_pane = True
+            # Restore the saved divider position once, after layout settles
+            if not self._sash_restored:
+                self._sash_restored = True
+                pos = int(self.cfg.get("sash_pos") or 0)
+                if pos > 0:
+                    self.root.after(120, lambda p=pos:
+                                    self._safe_sashpos(p))
+        elif self._acc_in_pane:
+            self._paned.forget(self._acc_wrap)
+            self._acc_in_pane = False
 
         self.count_var.set(t("Персонажей: {c} · Аккаунтов: {a}").format(
             c=len(chars), a=len(accounts)))
         self._refresh_tray()
 
-    def selected_idx(self, silent=False):
-        sel = self.tree.selection()
-        if not sel or sel[0].startswith("grp_"):
-            if not silent:
-                messagebox.showinfo(APP_TITLE, t("Выбери запись в списке."))
-            return None
-        return int(sel[0])
+    def _safe_sashpos(self, pos):
+        try:
+            if self._acc_in_pane:
+                self._paned.sashpos(0, pos)
+        except Exception:
+            pass
+
+    def _activate_table(self, tree):
+        # Give keyboard focus to whichever table the mouse is over. On Windows a
+        # click on an unfocused control is otherwise "eaten" just to activate it,
+        # forcing a second click to actually select a row. Grabbing focus on
+        # hover removes that activating click entirely.
+        try:
+            if tree.focus_get() is not tree:
+                tree.focus_set()
+        except Exception:
+            try:
+                tree.focus_set()
+            except Exception:
+                pass
+        self._strip_focus_ring(tree)
+
+    def _strip_focus_ring(self, tree):
+        # Keep keyboard focus (needed so a single click selects a row) but drop
+        # the dotted/active rectangle ttk draws around the focus item — the
+        # selection fill alone is enough. Cleared after idle so it runs once
+        # ttk's own click handler (which sets the focus item) has finished.
+        def _clear():
+            try:
+                tree.focus("")
+            except Exception:
+                pass
+        try:
+            tree.after_idle(_clear)
+        except Exception:
+            pass
+
+    def _table_click(self, tree, e):
+        # Make a single click on EITHER table select the row under the cursor
+        # immediately — and drop the highlight in the other table so only one
+        # row is ever selected. This kills the "extra click just selects the
+        # table" behaviour when switching between the two tables.
+        row = tree.identify_row(e.y)
+        if not row:
+            return
+        tree.focus_set()
+        tree.selection_set(row)
+        other = self.acc_tree if tree is self.tree else self.tree
+        try:
+            cur = other.selection()
+            if cur:
+                other.selection_remove(*cur)
+        except Exception:
+            pass
+        self._strip_focus_ring(tree)
+
+    def selected_idx(self, silent=True):
+        # Prefer the table that currently has keyboard focus (the one the user
+        # last clicked); fall back to whichever has a selection.
+        focused = None
+        try:
+            focused = self.root.focus_get()
+        except Exception:
+            pass
+        order = ([self.acc_tree, self.tree] if focused is self.acc_tree
+                 else [self.tree, self.acc_tree])
+        for tr in order:
+            sel = tr.selection()
+            if sel:
+                try:
+                    return int(sel[0])
+                except (ValueError, IndexError):
+                    pass
+        return None
+
+    # ── hover info-card ─────────────────────────────────────────────────────
+
+    def _hide_card(self):
+        if self._card is not None:
+            try:
+                self._card.destroy()
+            except Exception:
+                pass
+            self._card = None
+        self._card_row = None
+
+    def _on_tree_motion(self, e):
+        if not self.cfg.get("hover_card", True):
+            return
+        iid = self.tree.identify_row(e.y)
+        if not iid:
+            self._hide_card()
+            return
+        if iid == self._card_row:
+            return
+        self._hide_card()
+        try:
+            idx = int(iid)
+        except ValueError:
+            return
+        if 0 <= idx < len(self.cfg.get("characters", [])):
+            c = self.cfg["characters"][idx]
+            # No card for account-only entries (no character)
+            if not str(c.get("name", "")).strip():
+                return
+            self._card_row = iid
+            self._show_card(c, e.x_root + 18, e.y_root + 12)
+
+    def _show_card(self, char, x, y):
+        cls = char.get("class", "")
+        color = CLASS_COLORS.get(cls, ACCENT)
+        win = tk.Toplevel(self.root)
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+        try:
+            win.attributes("-alpha", 0.97)
+        except Exception:
+            pass
+        outer = tk.Frame(win, bg=color)            # class-colored border
+        outer.pack(fill="both", expand=True)
+        body = tk.Frame(outer, bg=PANEL)
+        body.pack(fill="both", expand=True, padx=1, pady=1)
+
+        PX = 11
+        F = ("Segoe UI", 9)
+        FB = ("Segoe UI", 9, "bold")
+        name = char.get("name", "") or char.get("account", "") or "—"
+        head = name + (f"  ·  {class_disp(cls)}" if cls else "")
+        tk.Label(body, text=head, bg=PANEL, fg=color,
+                 font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=PX,
+                                                     pady=(7, 3))
+
+        def row(label, value):
+            if value in (None, "", 0):
+                return
+            r = tk.Frame(body, bg=PANEL); r.pack(fill="x", padx=PX, pady=0)
+            tk.Label(r, text=label, bg=PANEL, fg=MUTED, font=F).pack(side="left")
+            tk.Label(r, text=str(value), bg=PANEL, fg=TEXT,
+                     font=FB).pack(side="left", padx=(5, 0))
+
+        rec = INGAME.get(str(char.get("name", "")).lower())
+        labels = self.cfg.get("card_labels", {})
+
+        def field_label(key):
+            return labels.get(key) or t(CARD_LABELS.get(key, key))
+
+        if not rec:
+            tk.Label(body, text=t("Нет данных из игры."),
+                     bg=PANEL, fg=MUTED, font=F).pack(anchor="w", padx=PX,
+                                                      pady=(2, 8))
+        else:
+            tk.Frame(body, bg=BORDER, height=1).pack(fill="x", padx=PX,
+                                                     pady=(4, 4))
+            for key in self.cfg.get("card_fields", CARD_ORDER):
+                if key == "currencies":
+                    cur = rec.get("currencies") or {}
+                    if isinstance(cur, dict) and cur:
+                        tk.Label(body, text=field_label(key) + ":", bg=PANEL,
+                                 fg=MUTED, font=F).pack(anchor="w", padx=PX,
+                                                        pady=(4, 0))
+                        for cname, cnt in list(cur.items())[:14]:
+                            tk.Label(body, text=f"  {cname}: {cnt}", bg=PANEL,
+                                     fg=TEXT, font=F).pack(anchor="w", padx=PX,
+                                                           pady=0)
+                elif key == "locks":
+                    locks = rec.get("locks") or []
+                    if isinstance(locks, dict):
+                        locks = [v for _k, v in sorted(locks.items())]
+                    if locks:
+                        tk.Label(body, text=field_label(key) + ":", bg=PANEL,
+                                 fg=MUTED, font=F).pack(anchor="w", padx=PX,
+                                                        pady=(4, 0))
+                        now = time.time()
+                        for lk in locks[:14]:
+                            if not isinstance(lk, dict):
+                                continue
+                            left = int((lk.get("resetAt") or 0) - now)
+                            cd = _fmt_dhm(left) if left > 0 else "—"
+                            tk.Label(body, text=f"  {lk.get('name','?')} "
+                                                f"({lk.get('diff','')}) — {cd}",
+                                     bg=PANEL, fg=TEXT, font=F).pack(
+                                         anchor="w", padx=PX, pady=0)
+                elif key == "profs":
+                    profs = rec.get("profs") or []
+                    if isinstance(profs, dict):
+                        profs = [v for _k, v in sorted(profs.items())]
+                    if profs:
+                        row(field_label(key) + ":",
+                            ", ".join(str(p) for p in profs[:4]))
+                else:
+                    v = rec.get(key)
+                    if v in (None, ""):
+                        continue
+                    if key == "gold":
+                        v = fmt_gold(v)
+                    elif key == "played":
+                        v = _fmt_played(v)
+                    row(field_label(key) + ":", v)
+
+        tk.Frame(body, bg=PANEL, height=5).pack()
+
+        win.update_idletasks()
+        w, h = win.winfo_reqwidth(), win.winfo_reqheight()
+        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+        x = min(x, sw - w - 8)
+        y = min(y, sh - h - 8)
+        win.geometry(f"+{x}+{y}")
+        self._card = win
 
     # ── tray ──────────────────────────────────────────────────────────────────
 
@@ -1541,6 +2611,7 @@ class App:
                 pass
 
     def _hide_to_tray(self):
+        self._save_window_state()
         if self._tray_icon:
             self.root.withdraw()
         else:
@@ -1562,6 +2633,7 @@ class App:
         self.root.focus_force()
 
     def _quit(self):
+        self._save_window_state()
         try:
             if self._tray_icon:
                 self._tray_icon.stop()
@@ -1570,11 +2642,6 @@ class App:
         self.root.destroy()
 
     def _on_activate(self, _e=None):
-        # Double-click / Enter on a group header just toggles it (default
-        # behaviour) — don't nag with a "select an entry" popup.
-        sel = self.tree.selection()
-        if sel and sel[0].startswith("grp_"):
-            return
         self.launch_selected()
 
     def _async_err(self, msg):
@@ -1646,7 +2713,6 @@ class App:
 
         dlg = tk.Toplevel(self.root)
         dlg.title(t("Запись"))
-        dlg.geometry("440x760")
         dlg.resizable(False, False)
         dlg.configure(bg=BG)
         dlg.grab_set()
@@ -1662,7 +2728,6 @@ class App:
         class_var     = tk.StringVar(
             value=t(NO_CLASS) if not _stored_class
             else class_disp(_stored_class))
-        gs_var        = tk.StringVar(value=str(char.get("gs", "")))
         realm_var     = tk.StringVar(value=char.get("realm",
                                           self.cfg["realms"][0]))
         realmlist_var = tk.StringVar(value=char.get("realmlist",
@@ -1687,39 +2752,6 @@ class App:
                      values=[t(NO_CLASS)] + [class_disp(c) for c in WOW_CLASSES],
                      state="readonly", font=("Segoe UI", 10)
                      ).pack(fill="x", padx=20, ipady=4)
-
-        tk.Label(dlg, text=t("ГС (Gear Score)"), bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(fill="x", padx=20, pady=(8, 0))
-        gs_row = tk.Frame(dlg, bg=BG); gs_row.pack(fill="x", padx=20)
-        _make_entry(gs_row, gs_var).pack(side="left", fill="x", expand=True,
-                                         ipady=5)
-
-        def refresh_gs():
-            wow = self.cfg.get("wow_path", "")
-            if not wow or not os.path.isdir(wow):
-                messagebox.showwarning(
-                    APP_TITLE,
-                    t("Сначала укажи папку с Wow.exe в Настройках."),
-                    parent=dlg)
-                return
-            gs = read_gearscore(wow, account_var.get().strip(),
-                                name_var.get().strip())
-            if gs:
-                gs_var.set(str(gs))
-            else:
-                messagebox.showinfo(
-                    APP_TITLE,
-                    t("ГС не найден в SavedVariables.\nПроверь, что установлен "
-                      "аддон GearScore и ты заходил за этого персонажа."),
-                    parent=dlg)
-
-        tk.Button(gs_row, text="↻", bg=BTN_BG, fg=TEXT, relief="flat", padx=9,
-                  command=refresh_gs
-                  ).pack(side="left", padx=(6, 0), ipady=4)
-        tk.Label(dlg,
-                 text=t("Обновить ГС из SavedVariables (нужен аддон GearScore)"),
-                 bg=BG, fg=MUTED, font=("Segoe UI", 8)
-                 ).pack(fill="x", padx=20, pady=(2, 0))
 
         tk.Label(dlg, text=t("Реалм"), bg=BG, fg=MUTED,
                  font=("Segoe UI", 9)).pack(fill="x", padx=20, pady=(8, 0))
@@ -1777,7 +2809,6 @@ class App:
                 "account":     account,
                 "password":    password_var.get(),
                 "class":       cls,
-                "gs":          gs_var.get().strip(),
                 "realm":       realm_var.get().strip(),
                 "realmlist":   realmlist_var.get().strip(),
                 "totp_secret": totp_var.get().strip(),
@@ -1796,13 +2827,302 @@ class App:
                   ).pack(fill="x", padx=20, pady=18)
 
         first.focus_set()
+        self._fit_dialog(dlg, 440)
+
+    # ── loader settings dialog ──────────────────────────────────────────────
+
+    def loader_settings(self, parent):
+        dlg = tk.Toplevel(parent)
+        dlg.title(t("Настройки лоадера"))
+        dlg.resizable(False, False)
+        dlg.configure(bg=BG)
+        dlg.grab_set()
+
+        tk.Label(dlg, text=t("Настройки лоадера"), bg=BG, fg=TEXT,
+                 font=("Segoe UI", 12, "bold")
+                 ).pack(padx=20, pady=(16, 4), anchor="w")
+        tk.Label(dlg, text=t("Лоадер используется для всех персонажей."),
+                 bg=BG, fg=MUTED, font=("Segoe UI", 8)
+                 ).pack(padx=20, anchor="w")
+
+        path_var  = tk.StringVar(value=self.cfg.get("loader_path", ""))
+        title_var = tk.StringVar(value=self.cfg.get("loader_window_title", ""))
+        btn_var   = tk.StringVar(value=self.cfg.get("loader_launch_button", ""))
+
+        tk.Label(dlg, text=t("Путь к .exe лоадера"), bg=BG, fg=MUTED,
+                 font=("Segoe UI", 9)).pack(fill="x", padx=20, pady=(10, 0))
+        prow = tk.Frame(dlg, bg=BG); prow.pack(fill="x", padx=20, pady=(2, 0))
+        _make_entry(prow, path_var).pack(side="left", fill="x", expand=True,
+                                         ipady=5)
+
+        def browse_loader():
+            p = filedialog.askopenfilename(
+                parent=dlg, title=t("Выбери .exe лоадера"),
+                filetypes=[("Exe", "*.exe"), ("All", "*.*")])
+            if p:
+                path_var.set(os.path.normpath(p))
+
+        tk.Button(prow, text=t("Обзор"), bg=BTN_BG, fg=TEXT, relief="flat",
+                  padx=10, command=browse_loader
+                  ).pack(side="left", padx=(8, 0), ipady=5)
+
+        sub = tk.Frame(dlg, bg=BG); sub.pack(fill="x", padx=20, pady=(10, 0))
+        cl = tk.Frame(sub, bg=BG); cl.pack(side="left", fill="x", expand=True)
+        cr = tk.Frame(sub, bg=BG); cr.pack(side="left", fill="x", expand=True,
+                                          padx=(8, 0))
+        tk.Label(cl, text=t("Заголовок окна"), bg=BG, fg=MUTED,
+                 font=("Segoe UI", 9)).pack(fill="x")
+        _make_entry(cl, title_var).pack(fill="x", ipady=4)
+        tk.Label(cr, text=t("Текст кнопки запуска"), bg=BG, fg=MUTED,
+                 font=("Segoe UI", 9)).pack(fill="x")
+        _make_entry(cr, btn_var).pack(fill="x", ipady=4)
+
+        def save():
+            self.cfg["loader_path"]          = path_var.get().strip()
+            self.cfg["loader_window_title"]  = title_var.get().strip()
+            self.cfg["loader_launch_button"] = btn_var.get().strip()
+            save_cfg(self.cfg)
+            dlg.destroy()
+
+        tk.Button(dlg, text=t("Сохранить"), bg=PRIMARY_BG, fg=PRIMARY_FG,
+                  relief="flat", pady=8, command=save
+                  ).pack(fill="x", padx=20, pady=(18, 14))
+        self._fit_dialog(dlg, 470)
+
+    # ── live drag-to-reorder for constructor rows ───────────────────────────
+
+    def _attach_drag(self, handle, item, items, rows_by_item):
+        """Reorder live while dragging: as the cursor passes another row, the
+        dragged row is repacked before/after it (no rebuild → smooth)."""
+        def motion(e):
+            frame = rows_by_item.get(id(item))
+            if not frame or not frame.winfo_exists():
+                return
+            py = e.y_root
+            for other in list(items):
+                if other is item:
+                    continue
+                of = rows_by_item.get(id(other))
+                if not of or not of.winfo_ismapped():
+                    continue
+                ry, rh = of.winfo_rooty(), of.winfo_height()
+                if rh and ry <= py <= ry + rh:
+                    ci, ti = items.index(item), items.index(other)
+                    items.pop(ci)
+                    items.insert(ti, item)
+                    if ci < ti:
+                        frame.pack_configure(after=of)
+                    else:
+                        frame.pack_configure(before=of)
+                    break
+        handle.configure(cursor="fleur")
+        handle.bind("<B1-Motion>", motion)
+
+    # ── dialog auto-fit helpers ─────────────────────────────────────────────
+
+    def _fit_dialog(self, dlg, width):
+        """Size a (non-scrolling) dialog to its content height, capped."""
+        dlg.update_idletasks()
+        sh = dlg.winfo_screenheight()
+        h = min(int(sh * 0.92), max(200, dlg.winfo_reqheight()))
+        dlg.geometry(f"{int(width)}x{h}")
+
+    def _fit_scroll(self, dlg, body, width, extra=80):
+        """Size a scrollable dialog to its content, capped to the screen."""
+        dlg.update_idletasks()
+        sh = dlg.winfo_screenheight()
+        h = min(int(sh * 0.92), max(260, body.winfo_reqheight() + extra))
+        dlg.geometry(f"{int(width)}x{h}")
+
+    # ── scrollable dialog body helper ───────────────────────────────────────
+
+    def _scroll_body(self, dlg):
+        outer = tk.Frame(dlg, bg=BG); outer.pack(fill="both", expand=True)
+        canvas = tk.Canvas(outer, bg=BG, highlightthickness=0, bd=0)
+        vsb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        body = tk.Frame(canvas, bg=BG)
+        win_id = canvas.create_window((0, 0), window=body, anchor="nw")
+        body.bind("<Configure>",
+                  lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>",
+                    lambda e: canvas.itemconfig(win_id, width=e.width))
+        canvas.bind_all("<MouseWheel>",
+                        lambda e: canvas.yview_scroll(int(-e.delta / 120),
+                                                     "units"))
+        return body
+
+    # ── columns builder ─────────────────────────────────────────────────────
+
+    def columns_constructor(self, parent):
+        dlg = tk.Toplevel(parent)
+        dlg.title(t("Конструктор столбцов"))
+        dlg.minsize(600, 300)
+        dlg.configure(bg=BG)
+        dlg.grab_set()
+
+        tk.Label(dlg, text=t("Конструктор столбцов"), bg=BG, fg=TEXT,
+                 font=("Segoe UI", 12, "bold")).pack(padx=20, pady=(14, 2),
+                                                     anchor="w")
+        tk.Label(dlg, text=t("Тащи ≡ для порядка. Галочка — показывать. "
+                             "Ширину меняй прямо в таблице за край заголовка. "
+                             "Точка справа — сортировать по столбцу."),
+                 bg=BG, fg=MUTED, font=("Segoe UI", 8), wraplength=600,
+                 justify="left").pack(padx=20, anchor="w", pady=(0, 6))
+
+        body = self._scroll_body(dlg)
+
+        avail = available_columns()
+        selected = [k for k in self.cfg.get("columns", DEFAULT_COLUMNS) if k]
+        for k in selected:
+            if k not in avail:
+                avail.append(k)
+        order = selected + [k for k in avail if k not in selected]
+        labels = dict(self.cfg.get("column_labels", {}))
+        srt = self.cfg.get("sort", {}) or {}
+        sort_var = tk.StringVar(value=srt.get("col", ""))
+        rev_var = tk.BooleanVar(value=bool(srt.get("reverse")))
+
+        items = []
+        for k in order:
+            items.append({
+                "key": k,
+                "show": tk.BooleanVar(value=(k in selected)),
+                "label": tk.StringVar(value=labels.get(k) or t(col_meta(k)[0])),
+            })
+
+        rows_by_item = {}
+
+        def make_row(it):
+            r = tk.Frame(body, bg=BG)
+            r.pack(fill="x", padx=20, pady=1)
+            rows_by_item[id(it)] = r
+            grip = tk.Label(r, text="≡", bg=BG, fg=MUTED, width=2,
+                            font=("Segoe UI", 12))
+            grip.pack(side="left")
+            self._attach_drag(grip, it, items, rows_by_item)
+            tk.Checkbutton(r, variable=it["show"], bg=BG, activebackground=BG,
+                           selectcolor=ENTRY_BG).pack(side="left", padx=(2, 4))
+            tk.Radiobutton(r, variable=sort_var, value=it["key"], bg=BG,
+                           activebackground=BG, selectcolor=ENTRY_BG
+                           ).pack(side="right")
+            _make_entry(r, it["label"]).pack(side="left", fill="x",
+                                             expand=True, ipady=2)
+
+        for it in items:
+            make_row(it)
+
+        tk.Checkbutton(dlg, text=t("Сортировать по убыванию"),
+                       variable=rev_var, bg=BG, fg=TEXT, activebackground=BG,
+                       activeforeground=TEXT, selectcolor=ENTRY_BG,
+                       font=("Segoe UI", 9), anchor="w"
+                       ).pack(fill="x", padx=18, pady=(6, 0))
+
+        def save():
+            new_cols, new_labels = [], {}
+            new_widths = dict(self.cfg.get("column_widths", {}))
+            for it in items:
+                k = it["key"]
+                if it["show"].get():
+                    new_cols.append(k)
+                lab = it["label"].get().strip()
+                if lab and lab != t(col_meta(k)[0]):
+                    new_labels[k] = lab
+            self.cfg["columns"] = new_cols or list(DEFAULT_COLUMNS)
+            self.cfg["column_labels"] = new_labels
+            self.cfg["column_widths"] = new_widths
+            self.cfg["sort"] = ({"col": sort_var.get(),
+                                 "reverse": bool(rev_var.get())}
+                                if sort_var.get() else {})
+            save_cfg(self.cfg)
+            dlg.destroy()
+            self.rebuild()
+
+        tk.Button(dlg, text=t("Сохранить"), bg=PRIMARY_BG, fg=PRIMARY_FG,
+                  relief="flat", pady=8, command=save
+                  ).pack(fill="x", padx=20, pady=(8, 12))
+        self._fit_scroll(dlg, body, 640, extra=150)
+
+    # ── card builder ────────────────────────────────────────────────────────
+
+    def card_constructor(self, parent):
+        dlg = tk.Toplevel(parent)
+        dlg.title(t("Конструктор карточки"))
+        dlg.minsize(440, 280)
+        dlg.configure(bg=BG)
+        dlg.grab_set()
+
+        tk.Label(dlg, text=t("Конструктор карточки"), bg=BG, fg=TEXT,
+                 font=("Segoe UI", 12, "bold")).pack(padx=20, pady=(14, 2),
+                                                     anchor="w")
+        tk.Label(dlg, text=t("Тащи ≡ для порядка. Галочка — показывать. "
+                             "Название можно менять."),
+                 bg=BG, fg=MUTED, font=("Segoe UI", 8), wraplength=440,
+                 justify="left").pack(padx=20, anchor="w")
+
+        body = self._scroll_body(dlg)
+
+        avail = available_card_fields()
+        selected = [k for k in self.cfg.get("card_fields", CARD_ORDER)
+                    if k in CARD_LABELS]
+        for k in selected:
+            if k not in avail:
+                avail.append(k)
+        # offer every known field, selected ones first in their order
+        order = selected + [k for k in CARD_ORDER if k not in selected]
+        labels = dict(self.cfg.get("card_labels", {}))
+
+        items = []
+        for k in order:
+            items.append({
+                "key": k,
+                "show": tk.BooleanVar(value=(k in selected)),
+                "label": tk.StringVar(value=labels.get(k) or t(CARD_LABELS[k])),
+                "has": (k in avail),
+            })
+
+        rows_by_item = {}
+        for it in items:
+            r = tk.Frame(body, bg=BG); r.pack(fill="x", padx=20, pady=1)
+            rows_by_item[id(it)] = r
+            grip = tk.Label(r, text="≡", bg=BG, fg=MUTED, width=2,
+                            font=("Segoe UI", 12))
+            grip.pack(side="left")
+            self._attach_drag(grip, it, items, rows_by_item)
+            tk.Checkbutton(r, variable=it["show"], bg=BG, activebackground=BG,
+                           selectcolor=ENTRY_BG).pack(side="left", padx=(2, 4))
+            if not it["has"]:
+                tk.Label(r, text="—", bg=BG, fg=MUTED,
+                         font=("Segoe UI", 8)).pack(side="right")
+            _make_entry(r, it["label"]).pack(side="left", fill="x",
+                                             expand=True, ipady=2)
+
+        def save():
+            new_fields, new_labels = [], {}
+            for it in items:
+                k = it["key"]
+                if it["show"].get():
+                    new_fields.append(k)
+                lab = it["label"].get().strip()
+                if lab and lab != t(CARD_LABELS[k]):
+                    new_labels[k] = lab
+            self.cfg["card_fields"] = new_fields
+            self.cfg["card_labels"] = new_labels
+            save_cfg(self.cfg)
+            dlg.destroy()
+
+        tk.Button(dlg, text=t("Сохранить"), bg=PRIMARY_BG, fg=PRIMARY_FG,
+                  relief="flat", pady=8, command=save
+                  ).pack(fill="x", padx=20, pady=(8, 12))
+        self._fit_scroll(dlg, body, 480, extra=110)
 
     # ── backup settings dialog ──────────────────────────────────────────────
 
     def backup_settings(self, parent):
         dlg = tk.Toplevel(parent)
         dlg.title(t("Настройки бэкапа"))
-        dlg.geometry("500x430")
         dlg.resizable(False, False)
         dlg.configure(bg=BG)
         dlg.grab_set()
@@ -1894,6 +3214,7 @@ class App:
         tk.Button(btn_row, text=t("Сохранить"), bg=PRIMARY_BG, fg=PRIMARY_FG,
                   relief="flat", padx=18, pady=8, command=save
                   ).pack(side="right")
+        self._fit_dialog(dlg, 500)
 
     # ── restore-from-backup dialog ──────────────────────────────────────────
 
@@ -1975,8 +3296,8 @@ class App:
     def settings(self):
         dlg = tk.Toplevel(self.root)
         dlg.title(t("Настройки"))
-        dlg.geometry("580x780")
-        dlg.resizable(False, False)
+        dlg.minsize(560, 360)
+        dlg.resizable(False, True)
         dlg.configure(bg=BG)
         dlg.grab_set()
 
@@ -1998,13 +3319,9 @@ class App:
                         lambda e: canvas.yview_scroll(int(-e.delta / 120),
                                                      "units"))
 
-        tk.Label(body, text=t("Настройки"), bg=BG, fg=TEXT,
-                 font=("Segoe UI", 13, "bold")
-                 ).pack(padx=20, pady=(18, 10), anchor="w")
-
         # ── WoW path ─────────────────────────────────────────────────────────
         tk.Label(body, text=t("Папка с Wow.exe"), bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(fill="x", padx=20)
+                 font=("Segoe UI", 9)).pack(fill="x", padx=20, pady=(16, 0))
         path_var = tk.StringVar(value=self.cfg.get("wow_path", ""))
         row = tk.Frame(body, bg=BG); row.pack(fill="x", padx=20, pady=(4, 12))
         _make_entry(row, path_var).pack(side="left", fill="x", expand=True,
@@ -2052,12 +3369,7 @@ class App:
             dlg.destroy()
             self.settings()
 
-        # ── Config management ────────────────────────────────────────────────
-        tk.Label(body, text=t("Конфиг"), bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(fill="x", padx=20, pady=(4, 0))
-        cfg_row = tk.Frame(body, bg=BG)
-        cfg_row.pack(fill="x", padx=20, pady=(2, 12))
-
+        # ── Config management (functions; buttons are packed at the bottom) ──
         def load_config():
             p = filedialog.askopenfilename(
                 parent=dlg, title=t("Загрузить конфиг"),
@@ -2122,38 +3434,6 @@ class App:
             self.render_rows()
             reload_settings_dialog()
 
-        for txt_key, bg_, fg_, cmd in (
-            ("Загрузить", BTN_BG,    TEXT,      load_config),
-            ("Скачать",   BTN_BG,    TEXT,      download_config),
-            ("Очистить",  "#FBE5E7", "#9A2730", clear_config),
-        ):
-            tk.Button(cfg_row, text=t(txt_key), bg=bg_, fg=fg_, relief="flat",
-                      padx=10, pady=6, command=cmd
-                      ).pack(side="left", padx=(0, 6))
-
-        # ══ Доп настройки ════════════════════════════════════════════════════
-        tk.Frame(body, bg=BORDER, height=1).pack(fill="x", padx=20, pady=(8, 8))
-        tk.Label(body, text=t("Доп настройки"), bg=BG, fg=TEXT,
-                 font=("Segoe UI", 11, "bold")
-                 ).pack(fill="x", padx=20, pady=(0, 6))
-
-        # ── Theme + language ─────────────────────────────────────────────────
-        theme_var = tk.StringVar(value=self.cfg.get("theme", "light"))
-        lang_var  = tk.StringVar(value=self.cfg.get("lang", "ru"))
-        tl_row = tk.Frame(body, bg=BG); tl_row.pack(fill="x", padx=20)
-        tk.Label(tl_row, text=t("Тема:"), bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(side="left")
-        ttk.Combobox(tl_row, textvariable=theme_var,
-                     values=("light", "dark"), state="readonly",
-                     width=8, font=("Segoe UI", 10)
-                     ).pack(side="left", padx=(8, 16), ipady=2)
-        tk.Label(tl_row, text=t("Язык:"), bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(side="left")
-        ttk.Combobox(tl_row, textvariable=lang_var,
-                     values=("ru", "en"), state="readonly",
-                     width=6, font=("Segoe UI", 10)
-                     ).pack(side="left", padx=(8, 0), ipady=2)
-
         # ── Encrypt secrets toggle ───────────────────────────────────────────
         encrypt_var = tk.BooleanVar(
             value=bool(self.cfg.get("encrypt_secrets", True)))
@@ -2178,68 +3458,84 @@ class App:
                   command=lambda: self.backup_settings(dlg)
                   ).pack(side="right")
 
-        # ── Global loader (optional) ─────────────────────────────────────────
-        loader_path_var  = tk.StringVar(value=self.cfg.get("loader_path", ""))
-        loader_title_var = tk.StringVar(value=self.cfg.get("loader_window_title", ""))
-        loader_btn_var   = tk.StringVar(value=self.cfg.get("loader_launch_button", ""))
+        # ── UI extras ────────────────────────────────────────────────────────
+        hover_var = tk.BooleanVar(value=bool(self.cfg.get("hover_card", True)))
+        hover_row = tk.Frame(body, bg=BG)
+        hover_row.pack(fill="x", padx=18, pady=(2, 0))
+        tk.Checkbutton(
+            hover_row, text=t("Карточка персонажа при наведении"),
+            variable=hover_var, bg=BG, fg=TEXT, activebackground=BG,
+            activeforeground=TEXT, selectcolor=ENTRY_BG,
+            font=("Segoe UI", 9), anchor="w"
+        ).pack(side="left")
+        tk.Button(hover_row, text=t("Настроить…"), bg=BTN_BG, fg=TEXT,
+                  relief="flat", padx=10, pady=2,
+                  command=lambda: self.card_constructor(dlg)
+                  ).pack(side="right")
 
-        tk.Label(body, text=t("Внешний лоадер (необязательно — используется "
-                              "для всех персонажей)"), bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9)
-                 ).pack(fill="x", padx=20, pady=(12, 0))
+        overlay_var = tk.BooleanVar(value=bool(self.cfg.get("overlay", False)))
+        tk.Checkbutton(
+            body, text=t("Оверлей в игре: кнопка перезахода у миникарты"),
+            variable=overlay_var, bg=BG, fg=TEXT, activebackground=BG,
+            activeforeground=TEXT, selectcolor=ENTRY_BG,
+            font=("Segoe UI", 9), anchor="w"
+        ).pack(fill="x", padx=18, pady=(2, 0))
 
-        tk.Label(body, text=t("Путь к .exe лоадера"), bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(fill="x", padx=20, pady=(6, 0))
+        # ── External loader (checkbox + Configure) ───────────────────────────
+        loader_var = tk.BooleanVar(value=bool(self.cfg.get("use_loader", False)))
         loader_row = tk.Frame(body, bg=BG)
-        loader_row.pack(fill="x", padx=20, pady=(2, 6))
-        _make_entry(loader_row, loader_path_var).pack(side="left", fill="x",
-                                                      expand=True, ipady=5)
+        loader_row.pack(fill="x", padx=18, pady=(2, 0))
+        tk.Checkbutton(
+            loader_row, text=t("Запускать через внешний лоадер"),
+            variable=loader_var, bg=BG, fg=TEXT, activebackground=BG,
+            activeforeground=TEXT, selectcolor=ENTRY_BG,
+            font=("Segoe UI", 9), anchor="w"
+        ).pack(side="left")
+        tk.Button(loader_row, text=t("Настроить…"), bg=BTN_BG, fg=TEXT,
+                  relief="flat", padx=10, pady=2,
+                  command=lambda: self.loader_settings(dlg)
+                  ).pack(side="right")
 
-        def browse_loader():
-            p = filedialog.askopenfilename(
-                parent=dlg, title=t("Выбери .exe лоадера"),
-                filetypes=[("Exe", "*.exe"), ("All", "*.*")])
-            if p:
-                loader_path_var.set(os.path.normpath(p))
+        # ── Columns: full builder (above shortcuts) ──────────────────────────
+        cols_row = tk.Frame(body, bg=BG)
+        cols_row.pack(fill="x", padx=18, pady=(0, 2))
+        tk.Label(cols_row, text=t("Столбцы в списке"), bg=BG, fg=TEXT,
+                 font=("Segoe UI", 9)).pack(side="left")
+        tk.Button(cols_row, text=t("Настроить…"), bg=BTN_BG, fg=TEXT,
+                  relief="flat", padx=10, pady=2,
+                  command=lambda: self.columns_constructor(dlg)
+                  ).pack(side="right")
 
-        tk.Button(loader_row, text=t("Обзор"), bg=BTN_BG, fg=TEXT,
-                  relief="flat", padx=10, command=browse_loader
-                  ).pack(side="left", padx=(8, 0), ipady=5)
-
-        sub_row = tk.Frame(body, bg=BG)
-        sub_row.pack(fill="x", padx=20, pady=(0, 12))
-        col_l = tk.Frame(sub_row, bg=BG)
-        col_l.pack(side="left", fill="x", expand=True)
-        col_r = tk.Frame(sub_row, bg=BG)
-        col_r.pack(side="left", fill="x", expand=True, padx=(8, 0))
-        tk.Label(col_l, text=t("Заголовок окна"), bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(fill="x")
-        _make_entry(col_l, loader_title_var).pack(fill="x", ipady=4)
-        tk.Label(col_r, text=t("Текст кнопки запуска"), bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(fill="x")
-        _make_entry(col_r, loader_btn_var).pack(fill="x", ipady=4)
-
-        # ── Desktop shortcut for an entry ────────────────────────────────────
-        sc_entries = [(c.get("name", "").strip() or c.get("account", "").strip())
-                      for c in self.cfg.get("characters", [])]
-        sc_entries = [lbl for lbl in sc_entries if lbl]
-        tk.Label(body, text=t("Ярлык на рабочем столе для записи"), bg=BG,
+        # ── Desktop shortcut for an entry (marked char / account) ────────────
+        sc_map = {}     # display label -> launch value
+        for c in self.cfg.get("characters", []):
+            nm = (c.get("name") or "").strip()
+            acc = (c.get("account") or "").strip()
+            if nm:
+                disp = "[П] " + nm
+                sc_map[disp] = nm
+            elif acc:
+                disp = "[А] " + acc
+                sc_map[disp] = acc
+        sc_displays = list(sc_map.keys())
+        tk.Label(body, text=t("Ярлык на рабочем столе для записи ([П] персонаж "
+                              "/ [А] аккаунт)"), bg=BG,
                  fg=MUTED, font=("Segoe UI", 9)
                  ).pack(fill="x", padx=20, pady=(12, 0))
         sc_row = tk.Frame(body, bg=BG)
         sc_row.pack(fill="x", padx=20, pady=(2, 8))
-        sc_var = tk.StringVar(value=(sc_entries[0] if sc_entries else ""))
-        ttk.Combobox(sc_row, textvariable=sc_var, values=sc_entries,
+        sc_var = tk.StringVar(value=(sc_displays[0] if sc_displays else ""))
+        ttk.Combobox(sc_row, textvariable=sc_var, values=sc_displays,
                      state="readonly", font=("Segoe UI", 10)
                      ).pack(side="left", fill="x", expand=True, ipady=2)
 
         def make_shortcut():
-            if not sc_entries:
+            if not sc_displays:
                 messagebox.showwarning(
                     APP_TITLE, t("Сначала добавь хотя бы одну запись."),
                     parent=dlg)
                 return
-            val = sc_var.get().strip()
+            val = sc_map.get(sc_var.get(), "")
             try:
                 p = create_desktop_shortcut(val, val)
                 messagebox.showinfo(
@@ -2255,6 +3551,21 @@ class App:
                   relief="flat", padx=10, command=make_shortcut
                   ).pack(side="left", padx=(8, 0), ipady=2)
 
+        # ── Config management (moved to the bottom) ──────────────────────────
+        tk.Frame(body, bg=BORDER, height=1).pack(fill="x", padx=20, pady=(12, 6))
+        tk.Label(body, text=t("Конфиг"), bg=BG, fg=MUTED,
+                 font=("Segoe UI", 9)).pack(fill="x", padx=20)
+        cfg_row = tk.Frame(body, bg=BG)
+        cfg_row.pack(fill="x", padx=20, pady=(2, 8))
+        for txt_key, bg_, fg_, cmd in (
+            ("Загрузить", BTN_BG,    TEXT,      load_config),
+            ("Скачать",   BTN_BG,    TEXT,      download_config),
+            ("Очистить",  "#FBE5E7", "#9A2730", clear_config),
+        ):
+            tk.Button(cfg_row, text=t(txt_key), bg=bg_, fg=fg_, relief="flat",
+                      padx=10, pady=6, command=cmd
+                      ).pack(side="left", padx=(0, 6))
+
         # ── Save button ──────────────────────────────────────────────────────
         def save():
             self.cfg["wow_path"] = path_var.get().strip()
@@ -2266,30 +3577,19 @@ class App:
                 self.cfg["realmlists"] = realmlists_new
                 if self.cfg.get("realmlist") not in realmlists_new:
                     self.cfg["realmlist"] = realmlists_new[0]
-            # rstrip-only so user can keep "Run WoW" with internal spaces
-            self.cfg["loader_path"]          = loader_path_var.get().strip()
-            self.cfg["loader_window_title"]  = loader_title_var.get().strip()
-            self.cfg["loader_launch_button"] = loader_btn_var.get().strip()
-            self.cfg["encrypt_secrets"]      = bool(encrypt_var.get())
-            self.cfg["backup_wtf"]           = bool(backup_var.get())
-            old_theme = self.cfg.get("theme", "light")
-            old_lang  = self.cfg.get("lang", "ru")
-            new_theme = theme_var.get()
-            new_lang  = lang_var.get()
-            self.cfg["theme"] = new_theme
-            self.cfg["lang"]  = new_lang
+            self.cfg["use_loader"]      = bool(loader_var.get())
+            self.cfg["encrypt_secrets"] = bool(encrypt_var.get())
+            self.cfg["backup_wtf"]      = bool(backup_var.get())
+            self.cfg["hover_card"]      = bool(hover_var.get())
+            self.cfg["overlay"]         = bool(overlay_var.get())
             save_cfg(self.cfg)
             dlg.destroy()
-            if old_theme != new_theme or old_lang != new_lang:
-                apply_theme(new_theme)
-                set_lang(new_lang)
-                self.rebuild()
-            else:
-                self.render_rows()
+            self.rebuild()
 
         tk.Button(body, text=t("Сохранить"), bg=PRIMARY_BG, fg=PRIMARY_FG,
                   relief="flat", pady=8, command=save
                   ).pack(fill="x", padx=20, pady=(12, 14))
+        self._fit_scroll(dlg, body, 580, extra=20)
 
 
 # ── single-instance lock ──────────────────────────────────────────────────────

@@ -1,0 +1,8 @@
+## Interface: 30300
+## Title: WoW Manager
+## Notes: Сбор данных персонажа + миникнопка перезахода для Менеджера персонажей WOW
+## Author: Zaifat
+## SavedVariables: WowManagerDB
+## SavedVariablesPerCharacter: WowManagerCharDB
+Config.lua
+Core.lua

@@ -25,6 +25,7 @@ python -m nuitka ^
     --windows-icon-from-ico=wow.ico ^
     --include-data-file=AwesomeWotlkLib.dll=AwesomeWotlkLib.dll ^
     --include-data-file=wow.ico=wow.ico ^
+    --include-data-dir=addon=addon ^
     --include-package=pystray ^
     --include-package=PIL ^
     --product-name="Менеджер персонажей WOW" ^
