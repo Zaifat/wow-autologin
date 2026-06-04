@@ -1,5 +1,6 @@
 # Менеджер персонажей WOW 3.3.5a
-<img width="877" height="587" alt="image" src="https://github.com/user-attachments/assets/10ca3cc6-89db-4dbe-957f-14b3b9b986f9" />
+<img width="877" height="615" alt="image" src="https://github.com/user-attachments/assets/11529358-1002-4aa5-8403-73f78d0f4597" />
+
 
 Лаунчер для World of Warcraft 3.3.5a (WotLK). Выбираешь персонажа — клиент сам вводит логин, пароль, реалм, заходит в игру и подтверждает 2FA-код. А встроенный аддон собирает данные персонажей прямо из игры и даёт сменить персонажа, не выходя из клиента.
 
@@ -21,6 +22,9 @@
 - **Кириллица в нике** работает корректно
 - **Установщик** с ярлыком в Пуске и автозапуском Windows
 
+<img width="896" height="806" alt="image" src="https://github.com/user-attachments/assets/ffffc9d9-36b9-4ea7-bbcb-bffae1ecfd8d" />
+
+
 ## Использование
 
 1. Скачать `Manager_WOW.exe` из [Releases](../../releases) — это установщик
@@ -31,7 +35,8 @@
 
 Конфиг хранится рядом с программой (`characters.json`), а если папка программы недоступна для записи — в `%LOCALAPPDATA%\АвтологинWOW\`. Пароли и 2FA-секреты по умолчанию зашифрованы DPAPI.
 
-<img width="951" height="792" alt="image" src="https://github.com/user-attachments/assets/e05c0c7f-ae36-47af-9896-9584551c1c76" />
+<img width="878" height="614" alt="image" src="https://github.com/user-attachments/assets/a5939f8d-11dd-42a1-9f89-e8cc3cb3f637" />
+
 
 ## Поддерживаемые серверы
 
