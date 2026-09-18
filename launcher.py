@@ -284,6 +284,10 @@ _EN = {
     "Пароли заблокированы — мастер-пароль не введён.":
         "Passwords are locked — no master password was entered.",
     "Ввести пароль": "Enter password",
+    "Уже запущена старая версия менеджера (значок в трее).\n"
+    "Закрой её через меню трея и запусти программу снова.":
+        "An older version of the manager is already running (tray icon).\n"
+        "Close it from the tray menu and start the program again.",
     # roster export
     "Ростер для форума…": "Roster for the forum…",
     "Ростер": "Roster",
@@ -4695,22 +4699,35 @@ def _ipc_token():
         return base64.urlsafe_b64encode(hashlib.sha256(seed).digest()[:24])
 
 
+IPC_NONE, IPC_OK, IPC_STALE = 0, 1, 2
+_MSG_ACK = b"OK"
+
+
 def _send_to_existing(msg):
-    """Send `msg` to a running instance. Return True if one answered."""
+    """Hand `msg` to a running instance.
+
+    IPC_NONE  — nobody is listening; this copy should start normally.
+    IPC_OK    — a current instance took the request.
+    IPC_STALE — something holds the port but never confirmed: in practice a
+                pre-1.5 manager still sitting in the tray, which neither knows
+                the token nor answers. Starting silently would look like the
+                program doesn't open at all."""
     msg = _ipc_token() + b"|" + msg
     try:
         c = socket.create_connection(("127.0.0.1", _SINGLE_INSTANCE_PORT),
                                      timeout=0.5)
     except OSError:
-        return False
+        return IPC_NONE
     try:
+        c.settimeout(1.5)
         c.sendall(msg)
-        c.shutdown(socket.SHUT_RDWR)
+        c.shutdown(socket.SHUT_WR)          # EOF for the reader, keep our end
+        reply = c.recv(16)
+        return IPC_OK if reply.startswith(_MSG_ACK) else IPC_STALE
     except OSError:
-        pass
+        return IPC_STALE
     finally:
         c.close()
-    return True
 
 
 def _start_single_instance_listener(on_show, on_launch):
@@ -4739,9 +4756,13 @@ def _start_single_instance_listener(on_show, on_launch):
                             break
                         chunks.append(part)
                     data = b"".join(chunks)
-                prefix = token + b"|"
-                if not data.startswith(prefix):
-                    continue
+                    prefix = token + b"|"
+                    if not data.startswith(prefix):
+                        continue
+                    try:
+                        conn.sendall(_MSG_ACK)
+                    except OSError:
+                        pass
                 data = data[len(prefix):]
                 if data == _MSG_SHOW:
                     on_show()
@@ -4766,7 +4787,24 @@ if __name__ == "__main__":
     msg = (_MSG_LAUNCH + target.encode("utf-8")) if target else _MSG_SHOW
 
     # If another instance is running, hand it the request and exit silently.
-    if _send_to_existing(msg):
+    state = _send_to_existing(msg)
+    if state == IPC_OK:
+        sys.exit(0)
+    if state == IPC_STALE:
+        _cfg_lang = "ru"
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as _fh:
+                _cfg_lang = json.load(_fh).get("lang", "ru")
+        except Exception:
+            pass
+        set_lang(_cfg_lang)
+        _r = tk.Tk()
+        _r.withdraw()
+        messagebox.showwarning(
+            APP_TITLE,
+            t("Уже запущена старая версия менеджера (значок в трее).\n"
+              "Закрой её через меню трея и запусти программу снова."))
+        _r.destroy()
         sys.exit(0)
 
     root = tk.Tk()
