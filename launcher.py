@@ -22,7 +22,7 @@ import webbrowser
 import zipfile
 from tkinter import filedialog, messagebox, ttk
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"
 
 
 # Bail out immediately if a debugger is attached. This is a soft anti-RE

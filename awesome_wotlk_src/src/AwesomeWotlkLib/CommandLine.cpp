@@ -30,6 +30,10 @@ static bool  s_charEnumLogged = false;
 static std::string s_targetCharacter;  // who we are currently trying to enter
 static bool  s_targetInit     = false;
 static std::string s_pendingSwitch;    // set from Lua by the in-game addon
+static DWORD s_pendingTick     = 0;    // when the switch was requested
+static bool  s_switchMode      = false;// re-armed by a switch, not by the launcher
+static DWORD s_rearmTick       = 0;
+static bool  s_listSinceSwitch = false;// a character list arrived after the request
 
 // Wait this long after selecting the slot before asking to enter the world —
 // the click has to be applied client-side first.
@@ -41,6 +45,13 @@ static const DWORD kSelectSettleMs = 700;
 // that is still visibly up this long after the attempt gets another try.
 static const DWORD kEnterRetryMs  = 20000;
 static const int   kMaxEnterTries = 3;
+// A switch request only stays valid for the logout it was made for: the game's
+// countdown is 20 s, plus the trip back to character select. After that it is
+// stale, and must not hijack some later, unrelated logout.
+static const DWORD kSwitchTtlMs   = 60000;
+// After logging out, the client still holds the OLD character list until the
+// server sends a fresh one. Wait for it (or this long) before picking a slot.
+static const DWORD kFreshListWaitMs = 5000;
 
 
 static void writeLog(const char* fmt, ...)
@@ -231,14 +242,21 @@ static bool runLuaChunk(lua_State* L, const char* src)
 // is a GlueXML-only global: the moment EnterWorld takes hold the glue Lua state
 // is torn down and the global disappears, which is how we tell "the enter went
 // through, we're loading" from "nothing happened, we're still sitting here".
-static bool atCharacterSelect(lua_State* L)
+// `CharacterSelect` is a GlueXML-only global. The glue and the game world run
+// in separate Lua states, so it exists exactly while we are on the glue screens.
+static bool glueAlive(lua_State* L)
 {
     if (!L) return false;
-
     lua_getglobal(L, "CharacterSelect");
-    bool glueAlive = !lua_isnil(L, -1);
+    bool alive = !lua_isnil(L, -1);
     lua_pop(L, 1);
-    if (!glueAlive) return false;
+    return alive;
+}
+
+
+static bool atCharacterSelect(lua_State* L)
+{
+    if (!glueAlive(L)) return false;
 
     // The glue can be alive with a different screen in front (realm list, token
     // dialog), so ask the frame itself.
@@ -346,12 +364,9 @@ static bool hmacSha1(const uint8_t* key, DWORD keyLen,
 }
 
 
-static std::string computeTotp(const std::string& base32Secret)
+// Current 30-second TOTP step (RFC 6238 counter).
+static uint64_t totpStep()
 {
-    std::vector<uint8_t> key;
-    if (!base32Decode(base32Secret.c_str(), key)) return "";
-
-    // Unix time in seconds, 30s window
     FILETIME ft;
     GetSystemTimeAsFileTime(&ft);
     ULARGE_INTEGER ull;
@@ -359,7 +374,14 @@ static std::string computeTotp(const std::string& base32Secret)
     ull.HighPart = ft.dwHighDateTime;
     // FILETIME = 100-ns intervals since 1601; Unix = seconds since 1970
     uint64_t unixSec = (ull.QuadPart - 116444736000000000ULL) / 10000000ULL;
-    uint64_t counter = unixSec / 30;
+    return unixSec / 30;
+}
+
+
+static std::string computeTotp(const std::string& base32Secret, uint64_t counter)
+{
+    std::vector<uint8_t> key;
+    if (!base32Decode(base32Secret.c_str(), key)) return "";
 
     uint8_t msg[8];
     for (int i = 7; i >= 0; --i) {
@@ -389,13 +411,23 @@ static std::string getCurrentToken()
     // Prefer fresh TOTP from secret (works regardless of launcher-to-dialog delay)
     const char* secret = getParam("totp_secret");
     if (secret && *secret) {
-        std::string code = computeTotp(secret);
-        if (!code.empty()) {
+        // This runs every frame while the login screens are up. The code only
+        // changes every 30 s, so compute (and log) once per step instead of
+        // doing HMAC-SHA1 and a log line on every single frame.
+        static uint64_t s_step = ~0ULL;
+        static std::string s_code;
+        uint64_t step = totpStep();
+        if (step != s_step) {
+            s_step = step;
+            s_code = computeTotp(secret, step);
             // Never log the code itself — autologin.log sits next to Wow.exe.
-            writeLog("[totp] computed fresh code (%d digits)", (int)code.size());
-            return code;
+            if (s_code.empty())
+                writeLog("[totp] failed to compute from secret");
+            else
+                writeLog("[totp] new code for this 30s window");
         }
-        writeLog("[totp] failed to compute from secret");
+        if (!s_code.empty())
+            return s_code;
     }
     // Legacy fallback: static pre-computed token
     const char* tok = getParam("token");
@@ -543,6 +575,7 @@ static void gluexml_charenum()
 static void gluexml_charlist_arrived()
 {
     s_charEnumLogged = false;
+    s_listSinceSwitch = true;
     gluexml_charenum();
 }
 
@@ -558,6 +591,8 @@ static int lua_WowManagerSwitchCharacter(lua_State* L)
 {
     const char* name = luaL_checkstring(L, 1);
     s_pendingSwitch = name ? name : "";
+    s_pendingTick = GetTickCount();
+    s_listSinceSwitch = false;
     writeLog("[switch] requested '%s'", s_pendingSwitch.c_str());
     return 0;
 }
@@ -573,12 +608,24 @@ static int lua_openwowmanagerlib(lua_State* L)
 
 static void gluexml_character_onupdate()
 {
+    lua_State* L0 = GetLuaState();
+    const DWORD now0 = GetTickCount();
+
     if (s_autologinDone) {
         // Normally we stay retired for the rest of the process. The exception
         // is an in-client character switch: the addon named a target and then
         // logged out, so the glue screen belongs to us again.
-        if (s_pendingSwitch.empty() || IsInWorld())
+        //
+        // "Back on the glue" is judged by the glue's own Lua global rather than
+        // the client's in-world byte, which is not guaranteed to clear on
+        // logout the way it is set on login.
+        if (s_pendingSwitch.empty() || !glueAlive(L0))
             return;
+        if (now0 - s_pendingTick > kSwitchTtlMs) {
+            writeLog("[switch] request for '%s' expired", s_pendingSwitch.c_str());
+            s_pendingSwitch.clear();
+            return;
+        }
         s_targetCharacter = s_pendingSwitch;
         s_targetInit      = true;
         s_pendingSwitch.clear();
@@ -587,14 +634,17 @@ static void gluexml_character_onupdate()
         s_enterTries      = 0;
         s_charEnumLogged  = false;
         s_autologinDone   = false;
+        s_switchMode      = true;
+        s_rearmTick       = now0;
         writeLog("[switch] re-arming for '%s'", s_targetCharacter.c_str());
     }
 
     // Reaching the world retires the whole machine for the rest of the process:
     // logging out back to character select later is the player's business, not
     // ours, and re-entering from here would fight them.
-    if (IsInWorld()) {
+    if (IsInWorld() && !glueAlive(L0)) {
         s_autologinDone = true;
+        s_switchMode = false;
         writeLog("[onupdate] world reached, autologin disarmed");
         return;
     }
@@ -604,6 +654,12 @@ static void gluexml_character_onupdate()
     tryTokenSubmit();
 
     if (s_characterIndex < 0) {
+        // Right after a logout the client still holds the list we left, and a
+        // slot picked from it before the screen is ready gets ignored. Wait for
+        // the server's fresh list (or give up waiting after a few seconds).
+        if (s_switchMode && !s_listSinceSwitch
+                && now0 - s_rearmTick < kFreshListWaitMs)
+            return;
         gluexml_charenum();
         return;
     }

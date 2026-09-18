@@ -273,8 +273,27 @@ local function requestRelog(account, char)
     Quit()
 end
 
+-- LOGOUT_CANCEL is not only "the player moved": the game also fires it while
+-- tearing the world down after a logout that DID go through (the countdown
+-- popup calls CancelLogout() as it closes). Clearing the switch on the spot
+-- therefore cancelled every switch. Instead, wait a few seconds: if we are
+-- still in the world then, the player really cancelled; if the logout went
+-- through, this Lua state is already gone and the timer never fires.
+local cancelWatch = CreateFrame("Frame")
+cancelWatch:Hide()
+cancelWatch:SetScript("OnUpdate", function(self, elapsed)
+    self.left = (self.left or 0) - elapsed
+    if self.left <= 0 then
+        self:Hide()
+        if type(WowManagerSwitchCharacter) == "function" then
+            WowManagerSwitchCharacter("")
+        end
+    end
+end)
+
 local function switchTo(entry)
     if canSwitchInClient(entry) then
+        cancelWatch:Hide()
         WowManagerSwitchCharacter(entry.name)
         Logout()
     else
@@ -736,11 +755,11 @@ f:SetScript("OnEvent", function(self, event, arg1)
         collect()
         startDelayedCollect()         -- gold/currency arrive shortly after
     elseif event == "LOGOUT_CANCEL" then
-        -- Player moved and the countdown stopped: drop the armed target so the
-        -- next, unrelated logout doesn't silently switch characters.
-        if type(WowManagerSwitchCharacter) == "function" then
-            WowManagerSwitchCharacter("")
-        end
+        -- Drop the armed target only if we turn out to still be in the world
+        -- (see cancelWatch). The DLL also expires a request on its own after
+        -- a minute, so nothing lingers either way.
+        cancelWatch.left = 3
+        cancelWatch:Show()
     elseif event == "TIME_PLAYED_MSG" then
         WowManagerCharDB.played = arg1
         collect()
