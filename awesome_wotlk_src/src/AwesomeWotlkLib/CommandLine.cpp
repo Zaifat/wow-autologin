@@ -15,10 +15,32 @@
 
 
 static std::vector<std::string> s_commandLine;
-static volatile LONG s_characterIndex = -1;
-static volatile LONG s_characterEntered = 0;
-static volatile LONG s_charSelectedFrames = 0;
-static volatile LONG s_tokenSubmitted = 0;
+
+// ── autologin state ───────────────────────────────────────────────────────────
+// Every callback in this file is invoked from the client's render thread, so
+// plain statics are enough — no interlocked access needed.
+static int   s_characterIndex = -1;   // slot of the requested character, -1 = unknown
+static bool  s_autologinDone  = false;// latched once the world has been reached
+static bool  s_selectIssued   = false;
+static int   s_enterTries     = 0;
+static DWORD s_selectTick     = 0;
+static DWORD s_enterTick      = 0;
+static bool  s_tokenSubmitted = false;
+static bool  s_charEnumLogged = false;
+static std::string s_targetCharacter;  // who we are currently trying to enter
+static bool  s_targetInit     = false;
+static std::string s_pendingSwitch;    // set from Lua by the in-game addon
+
+// Wait this long after selecting the slot before asking to enter the world —
+// the click has to be applied client-side first.
+static const DWORD kSelectSettleMs = 700;
+// EnterWorld is asynchronous (auth handshake + loading screen). Retrying it
+// while the first attempt is still in flight makes the server drop the freshly
+// created session and the player lands back on character select — which is
+// exactly the bug this timeout exists to avoid. Only a character-select screen
+// that is still visibly up this long after the attempt gets another try.
+static const DWORD kEnterRetryMs  = 20000;
+static const int   kMaxEnterTries = 3;
 
 
 static void writeLog(const char* fmt, ...)
@@ -160,11 +182,27 @@ static const char* getParam(const char* item)
 }
 
 
+// Case-insensitive for ASCII, exact for everything else — which is what we
+// want: the client hands us the name in UTF-8 and so does the launcher, and
+// _stricmp would only ever fold the ASCII half of a Cyrillic name anyway.
+// The character we should enter. Starts out as whatever the launcher asked
+// for and is replaced when the in-game addon requests a switch.
+static const char* currentTarget()
+{
+    if (!s_targetInit) {
+        s_targetInit = true;
+        if (const char* c = getParam("character"))
+            s_targetCharacter = c;
+    }
+    return s_targetCharacter.empty() ? NULL : s_targetCharacter.c_str();
+}
+
+
 static bool sameCharacterName(const char* actual, const char* expected)
 {
     if (!(actual && expected && *actual && *expected))
         return false;
-    return strcmp(actual, expected) == 0 || _stricmp(actual, expected) == 0;
+    return _stricmp(actual, expected) == 0;
 }
 
 
@@ -173,6 +211,48 @@ static const char* kSelectFuncs[] = {
     "SelectCharacter",
     NULL,
 };
+
+
+// Compile and run a Lua source chunk. Chunks talk back through globals — the
+// client's Lua build gives us no convenient way to read return values back.
+static bool runLuaChunk(lua_State* L, const char* src)
+{
+    lua_getglobal(L, "loadstring");
+    if (!lua_isfunction(L, -1)) { lua_pop(L, 1); return false; }
+    lua_pushstring(L, src);
+    if (lua_pcall(L, 1, 1, 0) != 0) { lua_pop(L, 1); return false; }
+    if (!lua_isfunction(L, -1)) { lua_pop(L, 1); return false; }
+    if (lua_pcall(L, 0, 0, 0) != 0) { lua_pop(L, 1); return false; }
+    return true;
+}
+
+
+// True only while the character-select screen is actually up. `CharacterSelect`
+// is a GlueXML-only global: the moment EnterWorld takes hold the glue Lua state
+// is torn down and the global disappears, which is how we tell "the enter went
+// through, we're loading" from "nothing happened, we're still sitting here".
+static bool atCharacterSelect(lua_State* L)
+{
+    if (!L) return false;
+
+    lua_getglobal(L, "CharacterSelect");
+    bool glueAlive = !lua_isnil(L, -1);
+    lua_pop(L, 1);
+    if (!glueAlive) return false;
+
+    // The glue can be alive with a different screen in front (realm list, token
+    // dialog), so ask the frame itself.
+    static const char* probe =
+        "AutoLoginAtCharSelect = nil "
+        "local f = CharacterSelect "
+        "if f and f.IsVisible and f:IsVisible() then AutoLoginAtCharSelect = 1 end ";
+    if (!runLuaChunk(L, probe)) return false;
+
+    lua_getglobal(L, "AutoLoginAtCharSelect");
+    bool visible = !lua_isnil(L, -1);
+    lua_pop(L, 1);
+    return visible;
+}
 
 
 static bool callLuaFunction0(lua_State* L, const char* fnName)
@@ -311,7 +391,8 @@ static std::string getCurrentToken()
     if (secret && *secret) {
         std::string code = computeTotp(secret);
         if (!code.empty()) {
-            writeLog("[totp] computed fresh code=%s", code.c_str());
+            // Never log the code itself — autologin.log sits next to Wow.exe.
+            writeLog("[totp] computed fresh code (%d digits)", (int)code.size());
             return code;
         }
         writeLog("[totp] failed to compute from secret");
@@ -325,7 +406,7 @@ static std::string getCurrentToken()
 
 static void tryTokenSubmit()
 {
-    if (InterlockedCompareExchange(&s_tokenSubmitted, 0, 0)) return;
+    if (s_tokenSubmitted) return;
 
     // Compute fresh on every call — TOTP code rotates every 30s, and we don't
     // know when the dialog will actually appear after launcher click.
@@ -407,18 +488,19 @@ static void tryTokenSubmit()
         "  end "
         "end ";
 
-    lua_getglobal(L, "loadstring");
-    if (!lua_isfunction(L, -1)) { lua_pop(L, 1); return; }
-    lua_pushstring(L, script);
-    if (lua_pcall(L, 1, 1, 0) != 0) { lua_pop(L, 1); return; }
-    if (!lua_isfunction(L, -1)) { lua_pop(L, 1); return; }
-    if (lua_pcall(L, 0, 0, 0) != 0) { lua_pop(L, 1); return; }
+    bool ran = runLuaChunk(L, script);
+
+    // The chunk copied the code into a local straight away, so drop it from the
+    // global table — otherwise a live 2FA code sits in _G for anything to read.
+    lua_pushnil(L);
+    lua_setglobal(L, "AutoLoginToken");
+    if (!ran) return;
 
     lua_getglobal(L, "AutoLoginTokenDone");
-    bool ok = (lua_type(L, -1) != 0); // 0 == LUA_TNIL
+    bool ok = !lua_isnil(L, -1);
     lua_pop(L, 1);
     if (ok) {
-        InterlockedExchange(&s_tokenSubmitted, 1);
+        s_tokenSubmitted = true;
         writeLog("[token] submitted");
     }
 }
@@ -426,72 +508,148 @@ static void tryTokenSubmit()
 
 static void gluexml_charenum()
 {
-    if (InterlockedCompareExchange(&s_characterEntered, 0, 0))
-        return;
-    if (InterlockedCompareExchange(&s_characterIndex, 0, 0) >= 0)
+    if (s_autologinDone || s_characterIndex >= 0)
         return;
 
-    const char* character = getParam("character");
+    const char* character = currentTarget();
     if (!character) return;
 
     LoginUI::CharVector* chars = LoginUI::GetChars();
     if (!chars || chars->size <= 0) return;
 
-    writeLog("[charenum] looking for '%s', size=%d", character, chars->size);
+    // This retries every frame until a match turns up, so describe the list
+    // only the first time round — otherwise a character name that matches
+    // nothing grows autologin.log by a screenful every second.
+    const bool verbose = !s_charEnumLogged;
+    s_charEnumLogged = true;
+    if (verbose)
+        writeLog("[charenum] looking for '%s', size=%d", character, chars->size);
     for (int i = 0; i < chars->size; i++) {
         const char* actualName = chars->buf[i].data.name;
-        writeLog("[charenum]   slot[%d] = '%s'", i, actualName ? actualName : "(null)");
+        if (verbose)
+            writeLog("[charenum]   slot[%d] = '%s'", i, actualName ? actualName : "(null)");
         if (sameCharacterName(actualName, character)) {
             writeLog("[charenum] MATCH at slot %d", i);
-            InterlockedExchange(&s_charSelectedFrames, 0);
-            InterlockedExchange(&s_characterIndex, i);
+            s_characterIndex = i;
             return;
         }
     }
-    writeLog("[charenum] no match for '%s'", character);
+    if (verbose)
+        writeLog("[charenum] no match for '%s'", character);
+}
+
+
+// The client just handed us a (possibly different) character list.
+static void gluexml_charlist_arrived()
+{
+    s_charEnumLogged = false;
+    gluexml_charenum();
+}
+
+
+// Runs on every FrameScript OnUpdate — in the glue AND in the world, so the
+// very first thing it does is make sure it stays out of the game's way.
+// WowManagerSwitchCharacter("Name") — called by the WowManager addon just
+// before Logout(). Logging out drops the client back to the glue screen while
+// the account session stays alive, so we can pick the next character straight
+// away instead of making the launcher restart the whole client. Passing "" (or
+// nothing useful) cancels a request the player backed out of.
+static int lua_WowManagerSwitchCharacter(lua_State* L)
+{
+    const char* name = luaL_checkstring(L, 1);
+    s_pendingSwitch = name ? name : "";
+    writeLog("[switch] requested '%s'", s_pendingSwitch.c_str());
+    return 0;
+}
+
+
+static int lua_openwowmanagerlib(lua_State* L)
+{
+    lua_pushcfunction(L, lua_WowManagerSwitchCharacter);
+    lua_setglobal(L, "WowManagerSwitchCharacter");
+    return 0;
 }
 
 
 static void gluexml_character_onupdate()
 {
-    // Try to submit the 2FA token if a -token arg was provided and the
-    // authenticator dialog is currently visible. Cheap no-op once submitted.
+    if (s_autologinDone) {
+        // Normally we stay retired for the rest of the process. The exception
+        // is an in-client character switch: the addon named a target and then
+        // logged out, so the glue screen belongs to us again.
+        if (s_pendingSwitch.empty() || IsInWorld())
+            return;
+        s_targetCharacter = s_pendingSwitch;
+        s_targetInit      = true;
+        s_pendingSwitch.clear();
+        s_characterIndex  = -1;
+        s_selectIssued    = false;
+        s_enterTries      = 0;
+        s_charEnumLogged  = false;
+        s_autologinDone   = false;
+        writeLog("[switch] re-arming for '%s'", s_targetCharacter.c_str());
+    }
+
+    // Reaching the world retires the whole machine for the rest of the process:
+    // logging out back to character select later is the player's business, not
+    // ours, and re-entering from here would fight them.
+    if (IsInWorld()) {
+        s_autologinDone = true;
+        writeLog("[onupdate] world reached, autologin disarmed");
+        return;
+    }
+
+    // 2FA dialog can pop up at any point before the character list, so keep
+    // trying while we're on the glue. Cheap no-op once submitted.
     tryTokenSubmit();
 
-    if (InterlockedCompareExchange(&s_characterEntered, 0, 0))
-        return;
-
-    int idx = InterlockedCompareExchange(&s_characterIndex, 0, 0);
-    if (idx < 0) {
+    if (s_characterIndex < 0) {
         gluexml_charenum();
         return;
     }
 
-    LONG frames = InterlockedIncrement(&s_charSelectedFrames);
+    const int idx = s_characterIndex;
+    const DWORD now = GetTickCount();
 
-    if (frames == 1) {
-        writeLog("[onupdate] frame=1: SelectCharacter(%d)", idx + 1);
+    if (!s_selectIssued) {
+        s_selectIssued = true;
+        s_selectTick = now;
+        writeLog("[onupdate] SelectCharacter(%d)", idx + 1);
         if (lua_State* L = GetLuaState()) {
             *(int*)0x00AC436C = idx;
             callLuaSelect(L, idx + 1);
         }
+        return;
     }
 
-    if (frames == 30) {
-        writeLog("[onupdate] frame=30: EnterWorld() for slot %d", idx);
-        if (lua_State* L = GetLuaState()) {
-            *(int*)0x00AC436C = idx;
-            if (callLuaFunction0(L, "EnterWorld"))
-                InterlockedExchange(&s_characterEntered, 1);
-        }
+    if (s_enterTries == 0) {
+        if (now - s_selectTick < kSelectSettleMs)
+            return;
+    } else {
+        // A retry is only ever safe when the character-select screen is STILL
+        // up — if the enter went through we are mid-loading-screen and a second
+        // EnterWorld would get the session dropped.
+        if (s_enterTries >= kMaxEnterTries) return;
+        if (now - s_enterTick < kEnterRetryMs) return;
+        if (!atCharacterSelect(GetLuaState())) return;
+        writeLog("[onupdate] still on character select %u ms after attempt %d",
+                 now - s_enterTick, s_enterTries);
     }
 
-    if (frames == 90 && !InterlockedCompareExchange(&s_characterEntered, 0, 0)) {
-        writeLog("[onupdate] frame=90: C-level fallback EnterWorld(%d)", idx);
+    s_enterTries++;
+    s_enterTick = now;
+
+    lua_State* L = GetLuaState();
+    if (s_enterTries == 1 && L) {
+        writeLog("[onupdate] EnterWorld() for slot %d", idx);
         *(int*)0x00AC436C = idx;
-        ((void(*)())0x004D9BD0)();
-        InterlockedExchange(&s_characterEntered, 1);
+        callLuaFunction0(L, "EnterWorld");
+        return;
     }
+
+    // GlueXML didn't take it — go straight at the client function.
+    writeLog("[onupdate] attempt %d: C-level EnterWorld(%d)", s_enterTries, idx);
+    LoginUI::EnterWorld(idx);
 }
 
 
@@ -530,10 +688,18 @@ void CommandLine::initialize()
         s_commandLine.emplace_back(u16tou8(argv[i]));
 
     writeLog("=== AwesomeWotlk autologin ===");
-    for (int i = 0; i < argc; i++)
-        writeLog("[init] arg[%d] = '%s'", i, s_commandLine[i].c_str());
+    // Log the shape of the command line, never its values — a -password or
+    // -totp_secret argument would otherwise end up in a plaintext file that
+    // lives next to Wow.exe.
+    for (int i = 0; i < argc; i++) {
+        const std::string& arg = s_commandLine[i];
+        bool looksLikeFlag = !arg.empty() && (arg[0] == '-' || arg[0] == '/');
+        writeLog("[init] arg[%d] = %s", i,
+                 (i == 0 || looksLikeFlag) ? arg.c_str() : "<value>");
+    }
 
-    Hooks::GlueXML::registerCharEnum(gluexml_charenum);
+    Hooks::FrameXML::registerLuaLib(lua_openwowmanagerlib);
+    Hooks::GlueXML::registerCharEnum(gluexml_charlist_arrived);
     Hooks::GlueXML::registerPostLoad(gluexml_postload);
     Hooks::FrameScript::registerOnUpdate(gluexml_character_onupdate);
 }

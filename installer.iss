@@ -4,7 +4,7 @@
 ; downloads.
 
 #define MyAppName    "Менеджер персонажей WOW"
-#define MyAppVersion "1.4.0"
+#define MyAppVersion "1.5.0"
 #define MyAppPublisher "Zaifat"
 #define MyAppExeName "Manager_WOW.exe"
 
@@ -13,7 +13,7 @@ AppId={{A8F9C2D1-3E47-4B6A-9F8E-2C5D7E1F4A82}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-AppPublisherURL=https://t.me/Zaifat_DK
+AppPublisherURL=https://t.me/Zaifat
 ; {autopf} resolves to "Program Files" (x64) since ArchitecturesInstallIn64BitMode
 ; is x64compatible — that's the standard install location for system-wide apps.
 DefaultDirName={autopf}\WowManager

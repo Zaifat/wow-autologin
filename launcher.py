@@ -22,7 +22,7 @@ import webbrowser
 import zipfile
 from tkinter import filedialog, messagebox, ttk
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 
 # Bail out immediately if a debugger is attached. This is a soft anti-RE
@@ -57,6 +57,10 @@ GITHUB_REPO = "Zaifat/wow-autologin"
 RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases/latest"
 # TOTP breaks if the PC clock drifts past ~half a 30s window; warn beyond this.
 TIME_DRIFT_WARN_SEC = 20
+# Ignore a repeat launch of the same entry within this window.
+LAUNCH_COOLDOWN_SEC = 10
+# Shortest master password we accept.
+MASTER_MIN_LEN = 6
 
 # ── localization ───────────────────────────────────────────────────────────────
 # Strings are keyed by their Russian source text. t() returns the English
@@ -95,7 +99,6 @@ _EN = {
     "Ник персонажа (пусто = только аккаунт)": "Character name (empty = account only)",
     "Логин аккаунта": "Account login",
     "Пароль": "Password",
-    "ГС (Gear Score)": "GS (Gear Score)",
     "Секрет 2FA (Google / 2FAS Auth / Yandex Authenticator)":
         "2FA secret (Google / 2FAS Auth / Yandex Authenticator)",
     "Если 2FA не подключена — оставь пусто.":
@@ -250,15 +253,113 @@ _EN = {
         "Shortcut created on the desktop:\n{path}",
     "Не удалось создать ярлык:\n{e}": "Failed to create shortcut:\n{e}",
     "Запись «{name}» не найдена.": "Entry «{name}» was not found.",
-    # gearscore
-    "Обновить ГС из SavedVariables (нужен аддон GearScore)":
-        "Refresh GS from SavedVariables (requires a GearScore addon)",
-    "ГС не найден в SavedVariables.\nПроверь, что установлен аддон "
-    "GearScore и ты заходил за этого персонажа.":
-        "GS not found in SavedVariables.\nMake sure a GearScore addon is "
-        "installed and you have logged in on this character.",
     "Сначала укажи папку с Wow.exe в Настройках.":
         "Set the Wow.exe folder in Settings first.",
+    "Realmlist пустой или содержит недопустимые символы: {r}":
+        "The realmlist is empty or has characters that cannot be used: {r}",
+    "Не удалось обновить {dll} — файл занят запущенным клиентом.\n"
+    "Закрой все окна WoW и запусти снова, иначе останется старая версия "
+    "патча.":
+        "Could not update {dll} — a running client is holding the file.\n"
+        "Close every WoW window and launch again, otherwise the old patch "
+        "stays in place.",
+    # secrets / master password
+    "Хранение паролей:": "Password storage:",
+    "Ключ Windows (этот ПК)": "Windows key (this PC)",
+    "Мастер-пароль": "Master password",
+    "Без шифрования": "No encryption",
+    "Сменить мастер-пароль…": "Change master password…",
+    "Задать мастер-пароль…": "Set master password…",
+    "Мастер-пароль делает конфиг переносимым: его можно взять на другой ПК, "
+    "но без пароля он бесполезен.":
+        "A master password makes the config portable — you can carry it to "
+        "another PC, and it is useless to anyone without the password.",
+    "Введи мастер-пароль": "Enter the master password",
+    "Новый мастер-пароль": "New master password",
+    "Повтори пароль": "Repeat the password",
+    "Пароли не совпадают.": "The passwords do not match.",
+    "Пароль слишком короткий — минимум {n} символов.":
+        "That password is too short — {n} characters minimum.",
+    "Неверный пароль.": "Wrong password.",
+    "Пароли заблокированы — мастер-пароль не введён.":
+        "Passwords are locked — no master password was entered.",
+    "Ввести пароль": "Enter password",
+    # roster export
+    "Ростер для форума…": "Roster for the forum…",
+    "Ростер": "Roster",
+    "Формат:": "Format:",
+    "Копировать": "Copy",
+    "Сохранить в файл…": "Save to file…",
+    "Закрыть": "Close",
+    "Скопировано в буфер обмена.": "Copied to the clipboard.",
+    "Нет персонажей с данными. Зайди в игру с аддоном хотя бы раз.":
+        "No characters with data yet. Log in once with the addon enabled.",
+    "Сохранить ростер": "Save the roster",
+    # (Персонаж / Класс / Ур. are already above, with the table headings)
+    "Гильдия": "Guild",
+    "Профессии": "Professions",
+    # WTF transfer
+    "Перенос настроек…": "Copy settings…",
+    "Перенос настроек персонажа": "Copy character settings",
+    "Откуда:": "From:",
+    "Куда (можно выбрать несколько):": "To (select one or more):",
+    "Что переносить:": "What to copy:",
+    "Интерфейс и бинды": "Interface and keybinds",
+    "Список включённых аддонов": "Enabled addon list",
+    "Макросы персонажа": "Character macros",
+    "Настройки аддонов (SavedVariables)": "Addon settings (SavedVariables)",
+    "Применить": "Apply",
+    "Перед переносом делается бэкап WTF — его можно откатить в «Настройки → "
+    "Авто-бэкап → Восстановить».":
+        "A WTF snapshot is taken first — you can roll it back from "
+        "Settings → Auto-backup → Restore.",
+    "Сначала закрой все окна WoW — клиент перезапишет WTF при выходе.":
+        "Close every WoW window first — the client rewrites WTF when it exits.",
+    "Выбери источник и хотя бы одного получателя.":
+        "Pick a source and at least one target.",
+    "Выбери, что переносить.": "Pick what to copy.",
+    "Перенести настройки «{src}» на выбранных персонажей ({n})?\n"
+    "Их текущие настройки будут перезаписаны.":
+        "Copy the settings of «{src}» onto the selected characters ({n})?\n"
+        "Their current settings will be overwritten.",
+    "Готово. Скопировано файлов: {n}": "Done. Files copied: {n}",
+    "Готово, но с ошибками ({e}). Скопировано файлов: {n}":
+        "Done, with errors ({e}). Files copied: {n}",
+    "В папке WTF нет ни одного персонажа.":
+        "There is not a single character in the WTF folder.",
+    "Переношу…": "Copying…",
+    "Сначала задай мастер-пароль кнопкой справа от списка.":
+        "Set a master password first, with the button next to the list.",
+    "Сейчас пароли заблокированы — сначала введи мастер-пароль, иначе их "
+    "нечем перешифровать.":
+        "The passwords are locked right now — enter the master password "
+        "first, otherwise there is nothing to re-encrypt.",
+    "Пароли и 2FA-секреты зашифрованы мастер-паролем.":
+        "Passwords and 2FA secrets are encrypted with a master password.",
+    "Мастер-пароль задан. Не потеряй его — восстановить нечем.":
+        "Master password set. Do not lose it — there is no recovery.",
+    "Пароли заблокированы. Введи мастер-пароль, чтобы запускать игру.":
+        "Passwords are locked. Enter the master password to launch the game.",
+    "Отмена": "Cancel",
+    "ОК": "OK",
+    # realm status
+    "Статус": "Status",
+    "{ms} мс": "{ms} ms",
+    "нет ответа": "no answer",
+    "проверяю…": "checking…",
+    # account summary
+    "Всего золота: {g}": "Total gold: {g}",
+    "Лучший ГС: {n} ({gs})": "Top GS: {n} ({gs})",
+    "Наиграно: {t}": "Played: {t}",
+    "Данных пока нет — зайди в игру с аддоном.":
+        "No data yet — log in once with the addon enabled.",
+    # weekly progress
+    "Дейлики": "Dailies",
+    "Арена/нед.": "Arena/wk",
+    "Квесты": "Quests",
+    "Команды арены": "Arena teams",
+    "сброс через {t}": "resets in {t}",
+    "{size} — рейтинг {r}, игр {n}": "{size} — rating {r}, {n} games",
 }
 
 # Sentinel shown in the class combobox for "no class"
@@ -297,15 +398,6 @@ def class_canon(disp):
     return CLASS_RU.get(disp, disp)
 
 
-def _ig(char, field, default=""):
-    """In-game value for a character (from the addon's SavedVariables)."""
-    rec = INGAME.get(str(char.get("name", "")).lower())
-    if not rec:
-        return default
-    v = rec.get(field)
-    return default if v is None else v
-
-
 # ── universal columns ──────────────────────────────────────────────────────────
 # Columns come from two sources: fixed fields of the manager record (class /
 # account / realm / realmlist) and ANY field the in-game addon collected
@@ -318,6 +410,8 @@ STATIC_COLUMNS = {
     "account":   ("Аккаунт",   110, "w",      lambda c: c.get("account", "")),
     "realm":     ("Реалм",     200, "w",      lambda c: c.get("realm", "")),
     "realmlist": ("Realmlist", 150, "w",      lambda c: c.get("realmlist", "")),
+    "status":    ("Статус",    95,  "center",
+                  lambda c: realm_status_text(c.get("realmlist", ""))),
 }
 # Friendly labels + numeric flag for known in-game fields
 IG_LABELS = {
@@ -326,12 +420,18 @@ IG_LABELS = {
     "spec": "Спек", "talents": "Таланты", "guild": "Гильдия", "zone": "Зона",
     "subzone": "Подзона", "bagFree": "Слоты", "played": "Наиграно",
     "race": "Раса", "faction": "Фракция",
+    "dailyDone": "Дейлики", "arenaGames": "Арена/нед.", "questsDone": "Квесты",
 }
-IG_NUMERIC = {"level", "gs", "ilvl", "honor", "arena", "achPoints", "bagFree"}
-# Fields that are structural/meta and never offered as columns
+IG_NUMERIC = {"level", "gs", "ilvl", "honor", "arena", "achPoints", "bagFree",
+              "arenaGames"}
+# Fields that are structural/meta and never offered as columns: either raw
+# building blocks for a composite value (dailyMax feeds "7 / 25") or data the
+# card renders as its own section.
 IG_SKIP = {"name", "realm", "updated", "currencies", "locks", "profs",
-           "xp", "xpMax", "rested", "class"}
+           "xp", "xpMax", "rested", "class",
+           "dailyMax", "dailyResetAt", "questsTotal", "arenaTeams"}
 IG_ORDER = ["level", "gs", "ilvl", "gold", "honor", "arena", "achPoints",
+            "dailyDone", "questsDone", "arenaGames",
             "spec", "guild", "zone", "subzone", "bagFree", "played",
             "race", "faction"]
 DEFAULT_COLUMNS = ["name", "class", "gs", "realm", "realmlist"]
@@ -344,12 +444,17 @@ CARD_LABELS = {
     "spec": "Спек", "talents": "Таланты", "guild": "Гильдия", "zone": "Зона",
     "subzone": "Подзона", "bagFree": "Слоты", "played": "Наиграно",
     "race": "Раса", "faction": "Фракция",
+    "dailyDone": "Дейлики", "arenaGames": "Арена за неделю",
+    "questsDone": "Квесты готовы",
     "currencies": "Валюта", "locks": "Рейд-локауты", "profs": "Профессии",
+    "arenaTeams": "Команды арены",
 }
 CARD_ORDER = ["level", "gs", "ilvl", "gold", "honor", "arena", "achPoints",
+              "dailyDone", "questsDone", "arenaGames",
               "spec", "talents", "guild", "zone", "subzone", "bagFree",
-              "played", "race", "faction", "currencies", "locks", "profs"]
-CARD_SECTIONS = {"currencies", "locks", "profs"}
+              "played", "race", "faction",
+              "currencies", "locks", "profs", "arenaTeams"]
+CARD_SECTIONS = {"currencies", "locks", "profs", "arenaTeams"}
 
 
 def available_card_fields():
@@ -362,6 +467,46 @@ def available_card_fields():
             if k in CARD_LABELS and v not in (None, "", [], {}):
                 present.add(k)
     return [k for k in CARD_ORDER if k in present]
+
+
+def entry_summary(char):
+    """Compact one-liner for a character — level, gear, gold — for places that
+    only have a single line to spend, like the in-game alts list."""
+    rec = INGAME.get(str(char.get("name", "")).lower())
+    if not rec:
+        return ""
+    bits = []
+    lvl = rec.get("level")
+    if lvl:
+        bits.append(str(lvl))
+    gs = rec.get("gs")
+    if gs:
+        bits.append("%s %s" % (t("ГС"), gs))
+    gold = rec.get("gold")
+    if gold:
+        bits.append(fmt_gold(gold))
+    return " · ".join(bits)
+
+
+def _ig_display(rec, key, long=False):
+    """Human-readable form of one collected field. `long` is the hover-card
+    variant, which has room for context a narrow column can't show."""
+    v = rec.get(key)
+    if v in (None, ""):
+        return ""
+    if key == "gold":
+        return fmt_gold(v)
+    if key == "played":
+        return _fmt_played(v)
+    if key == "dailyDone":
+        out = "%s / %s" % (v, rec.get("dailyMax") or 25)
+        left = int((rec.get("dailyResetAt") or 0) - time.time())
+        if long and left > 0:
+            out += "  (%s)" % t("сброс через {t}").format(t=_fmt_dhm(left))
+        return out
+    if key == "questsDone":
+        return "%s / %s" % (v, rec.get("questsTotal") or 0)
+    return v
 
 
 def card_lines(char, card_fields=None, card_labels=None):
@@ -406,28 +551,33 @@ def card_lines(char, card_fields=None, card_labels=None):
             if profs:
                 out.append(lbl(key) + ": "
                            + ", ".join(str(p) for p in profs[:4]))
+        elif key == "arenaTeams":
+            teams = rec.get("arenaTeams") or []
+            if isinstance(teams, dict):
+                teams = [v for _k, v in sorted(teams.items())]
+            rows = []
+            for tm in teams:
+                if not isinstance(tm, dict):
+                    continue
+                size = tm.get("size") or "?"
+                rows.append("  " + t("{size} — рейтинг {r}, игр {n}").format(
+                    size="%sx%s" % (size, size), r=int(tm.get("rating") or 0),
+                    n=int(tm.get("mine") or 0)))
+            if rows:
+                out.append(lbl(key) + ":")
+                out.extend(rows)
         else:
-            v = rec.get(key)
+            v = _ig_display(rec, key, long=True)
             if v in (None, ""):
                 continue
-            if key == "gold":
-                v = fmt_gold(v)
-            elif key == "played":
-                v = _fmt_played(v)
             out.append("%s: %s" % (lbl(key), v))
     return out
 
 
 def _ig_column_getter(key):
     def g(c, k=key):
-        v = _ig(c, k)
-        if v == "":
-            return ""
-        if k == "gold":
-            return fmt_gold(v)
-        if k == "played":
-            return _fmt_played(v)
-        return v
+        rec = INGAME.get(str(c.get("name", "")).lower())
+        return _ig_display(rec, k) if rec else ""
     return g
 
 
@@ -508,6 +658,48 @@ REALMLISTS_DEFAULT = [
     "logon.wowcircle.me",
     "logon.wowcircle.com",
 ]
+
+# ── realm status ──────────────────────────────────────────────────────────────
+# A plain TCP connect to the logon server answers "is this realmlist alive and
+# how far away is it" before you click anything. Filled in by a background
+# thread; the "status" column and the hover card read it.
+
+REALM_PORT = 3724               # standard 3.3.5a logon port
+REALM_PROBE_INTERVAL = 60       # seconds between sweeps
+REALM_STATUS = {}               # host -> {"ok": bool, "ms": int, "at": float}
+# The config's fallback realmlist, kept here so column getters (which only see
+# one character) can resolve an empty per-character value.
+FALLBACK_REALMLIST = [REALMLISTS_DEFAULT[0]]
+
+
+def probe_realm(host, timeout=2.5):
+    """Round-trip time to the logon server in ms, or None if it didn't answer.
+    A realmlist may carry an explicit `host:port`."""
+    host = (host or "").strip()
+    if not host:
+        return None
+    port = REALM_PORT
+    if ":" in host:
+        host, _, tail = host.rpartition(":")
+        try:
+            port = int(tail)
+        except ValueError:
+            port = REALM_PORT
+    started = time.monotonic()
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return int((time.monotonic() - started) * 1000)
+    except OSError:
+        return None
+
+
+def realm_status_text(host):
+    host = (host or "").strip() or FALLBACK_REALMLIST[0]
+    st = REALM_STATUS.get(host)
+    if not st:
+        return t("проверяю…")
+    return t("{ms} мс").format(ms=st["ms"]) if st["ok"] else t("нет ответа")
+
 
 # Wow.exe binary patches that make the client load AwesomeWotlkLib.dll
 _PATCHES = [
@@ -686,7 +878,10 @@ def _default_cfg():
         "lang":                 _detect_os_lang(),  # auto by OS on first run
         # Encrypt passwords / 2FA secrets at rest with Windows DPAPI (bound to
         # this PC + user). Turn off to store them as plaintext (portable).
-        "encrypt_secrets":      True,
+        # "dpapi" | "master" | "plain" — see the secret-storage section
+        "secret_mode":          "dpapi",
+        "master_salt":          "",   # base64, master mode only
+        "master_check":         "",   # base64 verifier, master mode only
         # Snapshot the game's WTF folder + Interface/AddOns before launch.
         "backup_wtf":           False,
         "backup_keep":          3,    # ring buffer size
@@ -716,13 +911,46 @@ def _default_cfg():
     }
 
 
-def load_cfg():
+def _read_cfg_file(path):
+    with open(path, "r", encoding="utf-8") as fh:
+        cfg = json.load(fh)
+    if not isinstance(cfg, dict):
+        raise ValueError("config is not an object")
+    return cfg
+
+
+def secret_mode(cfg):
+    mode = cfg.get("secret_mode")
+    if mode in SECRET_MODES:
+        return mode
+    # Pre-1.5 configs only had a boolean.
+    return "dpapi" if cfg.get("encrypt_secrets", True) else "plain"
+
+
+def load_cfg(decrypt=True):
     if not os.path.exists(CONFIG_FILE):
         cfg = _default_cfg()
         save_cfg(cfg)
         return cfg
-    with open(CONFIG_FILE, "r", encoding="utf-8") as fh:
-        cfg = json.load(fh)
+    # A truncated or corrupt config must not take the whole program down with
+    # it — every account and password lives in this file. Fall back to the
+    # previous good copy that save_cfg keeps beside it.
+    cfg = None
+    for path in (CONFIG_FILE, CONFIG_FILE + ".bak"):
+        if not os.path.isfile(path):
+            continue
+        try:
+            cfg = _read_cfg_file(path)
+            break
+        except (OSError, ValueError):
+            continue
+    if cfg is None:
+        # Keep the unreadable file instead of silently overwriting it.
+        try:
+            os.replace(CONFIG_FILE, CONFIG_FILE + ".corrupt")
+        except OSError:
+            pass
+        cfg = _default_cfg()
 
     # Migrate: older builds enabled the loader whenever loader_path was set.
     # Preserve that for users upgrading from before the use_loader flag.
@@ -739,27 +967,45 @@ def load_cfg():
         cfg.pop(k, None)
     for c in cfg.get("characters", []):
         c.pop("loader_name", None)
-    # Decrypt secrets — in-memory cfg always holds plaintext
-    for c in cfg.get("characters", []):
-        for k in _SECRET_FIELDS:
-            if c.get(k):
-                c[k] = decrypt_secret(c[k])
+    cfg["secret_mode"] = secret_mode(cfg)
+    cfg.pop("encrypt_secrets", None)
+    # Decrypt secrets — in-memory cfg normally holds plaintext. Master mode
+    # defers this until the password has been entered.
+    if decrypt:
+        decrypt_cfg_secrets(cfg)
     return cfg
 
 
 def save_cfg(cfg):
-    # Write a copy with secrets optionally encrypted; never mutate caller's cfg
-    encrypt = cfg.get("encrypt_secrets", True)
+    # Write a copy with secrets encrypted per the configured mode; never mutate
+    # the caller's cfg.
+    mode = secret_mode(cfg)
+    if mode == "master" and not have_master_key():
+        # Nothing was unlocked this session, so the values in hand are still
+        # ciphertext; encrypt_secret leaves those as they are.
+        pass
     out = {k: v for k, v in cfg.items() if k != "characters"}
     out["characters"] = []
     for c in cfg.get("characters", []):
         cc = dict(c)
         for k in _SECRET_FIELDS:
             if cc.get(k):
-                cc[k] = encrypt_secret(cc[k]) if encrypt else cc[k]
+                cc[k] = encrypt_secret(cc[k], mode)
         out["characters"].append(cc)
-    with open(CONFIG_FILE, "w", encoding="utf-8") as fh:
+    # Write-then-rename: a crash (or a pulled plug) part-way through must never
+    # leave a half-written characters.json, and the previous copy stays as a
+    # .bak that load_cfg falls back to.
+    tmp = CONFIG_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(out, fh, ensure_ascii=False, indent=2)
+        fh.flush()
+        os.fsync(fh.fileno())
+    if os.path.isfile(CONFIG_FILE):
+        try:
+            shutil.copy2(CONFIG_FILE, CONFIG_FILE + ".bak")
+        except OSError:
+            pass
+    os.replace(tmp, CONFIG_FILE)
 
 
 # ── AwesomeWotlk auto-deploy ──────────────────────────────────────────────────
@@ -817,7 +1063,7 @@ def _file_hash(path):
         return None
 
 
-def deploy_patch(wow_dir):
+def deploy_patch(wow_dir, on_error=None):
     src_dll = _bundled(AWESOME_DLL)
     if not os.path.isfile(src_dll):
         raise RuntimeError(t("В программу не зашит {dll}").format(dll=AWESOME_DLL))
@@ -830,7 +1076,13 @@ def deploy_patch(wow_dir):
         try:
             shutil.copy2(src_dll, dst_dll)
         except OSError:
-            pass  # DLL is loaded by a running client — keep the existing one
+            # A running client holds the DLL open. Swallowing this silently is
+            # how people end up stuck on an old DLL forever — say so once.
+            if on_error:
+                on_error(t("Не удалось обновить {dll} — файл занят запущенным "
+                           "клиентом.\nЗакрой все окна WoW и запусти снова, "
+                           "иначе останется старая версия патча."
+                           ).format(dll=AWESOME_DLL))
     wow_exe = os.path.join(wow_dir, "Wow.exe")
     if not os.path.isfile(wow_exe):
         raise RuntimeError(t("Не найден Wow.exe в {dir}").format(dir=wow_dir))
@@ -839,8 +1091,15 @@ def deploy_patch(wow_dir):
 
 
 def update_realmlist(wow_dir, realmlist):
+    # The client reads realmlist.wtf as plain bytes, so a host name has to be
+    # plain ASCII. Say so instead of raising a UnicodeError out of the middle
+    # of a launch (or, worse, writing a silently mangled host name).
+    clean = (realmlist or "").strip()
+    if not clean or any(ord(ch) > 126 or ord(ch) < 33 for ch in clean):
+        raise RuntimeError(t("Realmlist пустой или содержит недопустимые "
+                             "символы: {r}").format(r=realmlist))
     with open(os.path.join(wow_dir, "realmlist.wtf"), "w", encoding="ascii") as f:
-        f.write(f"set realmlist {realmlist}\n")
+        f.write("set realmlist %s\n" % clean)
 
 
 # ── WowManager addon: deploy + read its SavedVariables ─────────────────────────
@@ -867,7 +1126,8 @@ def _lua_str(s):
 
 
 def deploy_addon(wow_dir, enabled, show_minimap, characters=None,
-                 hover_card=True, card_fields=None, card_labels=None):
+                 hover_card=True, card_fields=None, card_labels=None,
+                 current_account=""):
     """Copy the WowManager addon into the game (or remove it). Writes Config.lua
     with the minimap-overlay flag, the hover-card flag and the manager's
     character list — including each character's class colour and a snapshot of
@@ -889,6 +1149,10 @@ def deploy_addon(wow_dir, enabled, show_minimap, characters=None,
         lines = ["WowManagerConfig = {",
                  "    showMinimap = %s," % ("true" if show_minimap else "false"),
                  "    hoverCard = %s," % ("true" if hover_card else "false"),
+                 # Which account this client is logged into. Entries on the
+                 # same account can be switched to without restarting the
+                 # client; the rest need the manager to relaunch Wow.exe.
+                 "    currentAccount = %s," % _lua_str(current_account or ""),
                  "    characters = {"]
         for c in (characters or []):
             nm = (c.get("name") or "").strip()
@@ -900,16 +1164,178 @@ def deploy_addon(wow_dir, enabled, show_minimap, characters=None,
             color = CLASS_COLORS.get(c.get("class", ""), "").lstrip("#").lower()
             info = card_lines(c, card_fields, card_labels) if nm else []
             info_lua = "{ %s }" % ", ".join(_lua_str(s) for s in info)
+            summary = entry_summary(c) if nm else ""
             lines.append(
-                "        { name = %s, account = %s, isAccount = %s, "
-                "color = %s, info = %s },"
-                % (_lua_str(label), _lua_str(acc), is_account,
-                   _lua_str(color), info_lua))
+                "        { name = %s, account = %s, realm = %s, "
+                "isAccount = %s, color = %s, summary = %s, info = %s },"
+                % (_lua_str(label), _lua_str(acc),
+                   _lua_str((c.get("realm") or "").strip()), is_account,
+                   _lua_str(color), _lua_str(summary), info_lua))
         lines += ["    },", "}", ""]
         with open(os.path.join(dst, "Config.lua"), "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
     except OSError:
         pass
+
+
+# ── roster export ─────────────────────────────────────────────────────────────
+# Guild officers ask for "post your alts" and people assemble it by hand. We
+# already know all of it.
+
+ROSTER_FORMATS = ("text", "bbcode", "markdown")
+_ROSTER_COLS = ("Персонаж", "Класс", "Ур.", "ГС", "Гильдия", "Реалм",
+                "Профессии")
+
+
+def roster_rows(cfg):
+    """One row per character entry: the manager's own fields plus whatever the
+    addon collected. Account-only entries have nothing to show, so they are
+    left out."""
+    rows = []
+    for c in cfg.get("characters", []):
+        name = (c.get("name") or "").strip()
+        if not name:
+            continue
+        rec = INGAME.get(name.lower()) or {}
+        profs = rec.get("profs") or []
+        if isinstance(profs, dict):
+            profs = [v for _k, v in sorted(profs.items())]
+        rows.append([
+            name,
+            class_disp(c.get("class", "")) or "",
+            str(rec.get("level") or ""),
+            str(rec.get("gs") or ""),
+            str(rec.get("guild") or ""),
+            (c.get("realm") or "").strip(),
+            ", ".join(str(x) for x in profs[:3]),
+        ])
+    return rows
+
+
+def format_roster(cfg, fmt="text"):
+    head = [t(h) for h in _ROSTER_COLS]
+    rows = roster_rows(cfg)
+    if not rows:
+        return ""
+    if fmt == "bbcode":
+        out = ["[table]", "[tr]" + "".join("[td][b]%s[/b][/td]" % h
+                                           for h in head) + "[/tr]"]
+        for r in rows:
+            out.append("[tr]" + "".join("[td]%s[/td]" % v for v in r) + "[/tr]")
+        out.append("[/table]")
+        return "\n".join(out)
+    if fmt == "markdown":
+        out = ["| " + " | ".join(head) + " |",
+               "|" + "|".join("---" for _ in head) + "|"]
+        for r in rows:
+            out.append("| " + " | ".join(r) + " |")
+        return "\n".join(out)
+    # plain text, padded into columns
+    widths = [max(len(head[i]), max(len(r[i]) for r in rows))
+              for i in range(len(head))]
+    def line(vals):
+        return "  ".join(v.ljust(widths[i]) for i, v in enumerate(vals)).rstrip()
+    out = [line(head), "-" * len(line(head))]
+    out.extend(line(r) for r in rows)
+    return "\n".join(out)
+
+
+# ── per-character settings transfer ───────────────────────────────────────────
+# Setting up a fresh alt means redoing the UI, the keybinds and every addon.
+# All of it lives in WTF/Account/<ACC>/<Realm>/<Character>/ — copying those
+# files over is the whole feature.
+
+# key -> (label, explicit file names; empty means "the SavedVariables folder")
+WTF_GROUPS = (
+    ("config", "Интерфейс и бинды",
+     ("config-cache.wtf", "layout-local.txt", "bindings-cache.wtf")),
+    ("addons", "Список включённых аддонов", ("AddOns.txt",)),
+    ("macros", "Макросы персонажа", ("macros-cache.txt",)),
+    ("savedvars", "Настройки аддонов (SavedVariables)", ()),
+)
+
+
+def list_wtf_characters(wow_dir):
+    """Every character folder the client has ever written, as
+    (account, realm, character, path). Sorted, so the UI order is stable."""
+    base = os.path.join(wow_dir or "", "WTF", "Account")
+    out = []
+    try:
+        accounts = sorted(os.listdir(base))
+    except OSError:
+        return out
+    for acc in accounts:
+        acc_dir = os.path.join(base, acc)
+        if not os.path.isdir(acc_dir):
+            continue
+        try:
+            realms = sorted(os.listdir(acc_dir))
+        except OSError:
+            continue
+        for realm in realms:
+            # Account-wide SavedVariables sit at this level, not a realm.
+            if realm.lower() == "savedvariables":
+                continue
+            realm_dir = os.path.join(acc_dir, realm)
+            if not os.path.isdir(realm_dir):
+                continue
+            try:
+                chars = sorted(os.listdir(realm_dir))
+            except OSError:
+                continue
+            for char in chars:
+                char_dir = os.path.join(realm_dir, char)
+                if os.path.isdir(char_dir):
+                    out.append((acc, realm, char, char_dir))
+    return out
+
+
+def copy_wtf_settings(src_dir, dst_dirs, groups):
+    """Copy the chosen groups from one character folder to others.
+    Returns (files_copied, [error strings]). Never raises."""
+    copied, errors = 0, []
+    wanted = {g[0] for g in WTF_GROUPS if g[0] in groups}
+    files = []
+    for key, _label, names in WTF_GROUPS:
+        if key in wanted:
+            files.extend(names)
+
+    for dst in dst_dirs:
+        if os.path.abspath(dst) == os.path.abspath(src_dir):
+            continue
+        try:
+            os.makedirs(dst, exist_ok=True)
+        except OSError as e:
+            errors.append("%s: %s" % (dst, e))
+            continue
+        for fn in files:
+            sp = os.path.join(src_dir, fn)
+            if not os.path.isfile(sp):
+                continue        # the client only writes what it needs
+            try:
+                shutil.copy2(sp, os.path.join(dst, fn))
+                copied += 1
+            except OSError as e:
+                errors.append("%s: %s" % (fn, e))
+        if "savedvars" in wanted:
+            sv_src = os.path.join(src_dir, "SavedVariables")
+            sv_dst = os.path.join(dst, "SavedVariables")
+            if os.path.isdir(sv_src):
+                try:
+                    os.makedirs(sv_dst, exist_ok=True)
+                except OSError as e:
+                    errors.append("%s: %s" % (sv_dst, e))
+                    continue
+                for fn in os.listdir(sv_src):
+                    sp = os.path.join(sv_src, fn)
+                    if not os.path.isfile(sp):
+                        continue
+                    try:
+                        shutil.copy2(sp, os.path.join(sv_dst, fn))
+                        copied += 1
+                    except OSError as e:
+                        errors.append("%s: %s" % (fn, e))
+    return copied, errors
 
 
 # ── minimal Lua-table (SavedVariables) parser ──────────────────────────────────
@@ -1087,8 +1513,14 @@ def read_relog_request(wow_dir, account):
     return None, 0
 
 
+# The names a 3.3.5a client ships under — the same list the AwesomeWotlk
+# patcher looks for. Getting this wrong would let the settings transfer write
+# underneath a live client, which then overwrites everything on exit.
+WOW_PROCESS_NAMES = (b"wow.exe", b"wowcircle.exe", b"run.exe")
+
+
 def is_wow_running():
-    """True if a Wow.exe process is currently running (Windows)."""
+    """True if a game client process is currently running (Windows)."""
     if sys.platform != "win32":
         return False
     try:
@@ -1115,7 +1547,7 @@ def is_wow_running():
         found = False
         if k.Process32First(snap, ctypes.byref(entry)):
             while True:
-                if entry.szExeFile.lower() == b"wow.exe":
+                if entry.szExeFile.lower() in WOW_PROCESS_NAMES:
                     found = True
                     break
                 if not k.Process32Next(snap, ctypes.byref(entry)):
@@ -1231,7 +1663,7 @@ def _backup_game_data(wow_dir, dest_root, keep, interval_sec):
     except Exception:
         # Clean up a half-written part file if anything blew up
         try:
-            if 'tmp_path' in dir() and os.path.exists(tmp_path):
+            if 'tmp_path' in locals() and os.path.exists(tmp_path):
                 os.remove(tmp_path)
         except OSError:
             pass
@@ -1240,6 +1672,7 @@ def _backup_game_data(wow_dir, dest_root, keep, interval_sec):
 def _restore_snapshot(wow_dir, zip_path):
     """Extract a snapshot .zip back into the game folder: WTF/* → <wow>/WTF,
     AddOns/* → <wow>/Interface/AddOns. Merges over existing files."""
+    game_root = os.path.abspath(wow_dir)
     with zipfile.ZipFile(zip_path, "r") as z:
         for member in z.namelist():
             if member.endswith("/"):
@@ -1251,6 +1684,10 @@ def _restore_snapshot(wow_dir, zip_path):
                 rel = norm[len("AddOns/"):].split("/")
                 dest = os.path.join(wow_dir, "Interface", "AddOns", *rel)
             else:
+                continue
+            # Never let ".." inside the archive escape the game folder.
+            dest = os.path.abspath(dest)
+            if os.path.commonpath([dest, game_root]) != game_root:
                 continue
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             with z.open(member) as src, open(dest, "wb") as out:
@@ -1443,6 +1880,18 @@ def _write_autologin_json(wow_dir, char, realmlist):
         json.dump(_build_autologin_json(char, realmlist), f, ensure_ascii=False)
 
 
+def drop_stale_autologin_json(wow_dir):
+    """Remove a leftover autologin.json. The DLL deletes the file as soon as it
+    reads it, so one surviving with no client running means the launch died
+    early — and it holds the account password in plain text."""
+    if not wow_dir or is_wow_running():
+        return
+    try:
+        os.remove(os.path.join(wow_dir, "autologin.json"))
+    except OSError:
+        pass
+
+
 def _dump_loader_controls(parent, target_text):
     """Write every child control's class+text to a log so the user can see
     exactly what the loader looks like and fix their button_text setting."""
@@ -1629,7 +2078,7 @@ def launch_wow(cfg, char, on_error=None):
     realmlist = (char.get("realmlist") or cfg.get("realmlist")
                  or REALMLISTS_DEFAULT[0])
 
-    deploy_patch(wow_dir)
+    deploy_patch(wow_dir, on_error=on_error)
     update_realmlist(wow_dir, realmlist)
 
     # Deploy (or remove) the data-collector / overlay addon based on settings
@@ -1639,7 +2088,8 @@ def launch_wow(cfg, char, on_error=None):
                  characters=cfg.get("characters", []),
                  hover_card=bool(cfg.get("hover_card", True)),
                  card_fields=cfg.get("card_fields"),
-                 card_labels=cfg.get("card_labels"))
+                 card_labels=cfg.get("card_labels"),
+                 current_account=char.get("account", ""))
 
     # Optional: snapshot WTF + AddOns in the background (throttled, ring-buffered)
     if cfg.get("backup_wtf"):
@@ -1718,7 +2168,90 @@ class _DataBlob(ctypes.Structure):
                 ("pbData", ctypes.POINTER(ctypes.c_byte))]
 
 _CRYPTPROTECT_UI_FORBIDDEN = 0x01
-_SECRET_PREFIX = "enc:v1:"
+
+# Secrets can be stored three ways, picked in Settings:
+#   "dpapi"  — Windows DPAPI, tied to this PC and this Windows account
+#              (the default, and what every existing config already uses)
+#   "master" — a master password typed once per session. The config becomes
+#              portable — a flash drive, another PC — and useless without it.
+#   "plain"  — no encryption.
+#
+# Master mode derives a key with scrypt and then does encrypt-then-MAC with an
+# HMAC-SHA256 keystream. That is not AES, and it is a deliberate trade: it keeps
+# the program dependency-free (nothing to bundle, nothing for an antivirus to
+# object to) while still being a sound construction.
+_SECRET_PREFIX = "enc:v1:"      # DPAPI blob
+_MASTER_PREFIX = "enc:m1:"      # master-password blob
+_SECRET_PREFIXES = (_SECRET_PREFIX, _MASTER_PREFIX)
+SECRET_MODES = ("dpapi", "master", "plain")
+
+_SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 1 << 15, 8, 1
+_MASTER_CHECK = b"WowManager master key check v1"
+
+# 64 bytes (32 cipher + 32 mac) for this session only — never written to disk.
+_MASTER_KEY = None
+# True when the config holds secrets we could not decrypt (wrong / refused
+# master password). Everything that needs a password must refuse to run.
+SECRETS_LOCKED = False
+
+
+def _is_encrypted(value):
+    return isinstance(value, str) and value.startswith(_SECRET_PREFIXES)
+
+
+def derive_master_key(password, salt):
+    return hashlib.scrypt(password.encode("utf-8"), salt=salt,
+                          n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P,
+                          dklen=64, maxmem=192 * 1024 * 1024)
+
+
+def _keystream(key, nonce, nbytes):
+    out = bytearray()
+    counter = 0
+    while len(out) < nbytes:
+        out += hmac.new(key, nonce + struct.pack(">I", counter),
+                        hashlib.sha256).digest()
+        counter += 1
+    return bytes(out[:nbytes])
+
+
+def _xor(data, stream):
+    return bytes(a ^ b for a, b in zip(data, stream))
+
+
+def master_verifier(key):
+    return base64.b64encode(
+        hmac.new(key[32:], _MASTER_CHECK, hashlib.sha256).digest()).decode("ascii")
+
+
+def set_master_key(key):
+    global _MASTER_KEY
+    _MASTER_KEY = key
+
+
+def have_master_key():
+    return _MASTER_KEY is not None
+
+
+def _master_encrypt(plaintext):
+    if _MASTER_KEY is None:
+        raise RuntimeError("master key is not unlocked")
+    nonce = os.urandom(16)
+    data = plaintext.encode("utf-8")
+    ct = _xor(data, _keystream(_MASTER_KEY[:32], nonce, len(data)))
+    tag = hmac.new(_MASTER_KEY[32:], nonce + ct, hashlib.sha256).digest()[:16]
+    return _MASTER_PREFIX + base64.b64encode(nonce + tag + ct).decode("ascii")
+
+
+def _master_decrypt(stored):
+    if _MASTER_KEY is None:
+        raise RuntimeError("master key is not unlocked")
+    blob = base64.b64decode(stored[len(_MASTER_PREFIX):])
+    nonce, tag, ct = blob[:16], blob[16:32], blob[32:]
+    expect = hmac.new(_MASTER_KEY[32:], nonce + ct, hashlib.sha256).digest()[:16]
+    if not hmac.compare_digest(tag, expect):
+        raise ValueError("wrong master password or tampered value")
+    return _xor(ct, _keystream(_MASTER_KEY[:32], nonce, len(ct))).decode("utf-8")
 
 
 def _dpapi_call(fn, data):
@@ -1735,10 +2268,17 @@ def _dpapi_call(fn, data):
         ctypes.windll.kernel32.LocalFree(out_blob.pbData)
 
 
-def encrypt_secret(plaintext):
-    if not plaintext or sys.platform != "win32":
+def encrypt_secret(plaintext, mode="dpapi"):
+    # Already a blob (e.g. we never managed to unlock it) — leave it alone
+    # rather than encrypting the ciphertext a second time.
+    if not plaintext or _is_encrypted(plaintext):
         return plaintext
-    if isinstance(plaintext, str) and plaintext.startswith(_SECRET_PREFIX):
+    if mode == "master":
+        try:
+            return _master_encrypt(plaintext)
+        except Exception:
+            return plaintext
+    if mode != "dpapi" or sys.platform != "win32":
         return plaintext
     try:
         blob = _dpapi_call(ctypes.windll.crypt32.CryptProtectData,
@@ -1749,9 +2289,14 @@ def encrypt_secret(plaintext):
 
 
 def decrypt_secret(stored):
-    if not stored or not isinstance(stored, str) or not stored.startswith(_SECRET_PREFIX):
+    """Undo whichever scheme produced this value. Dispatching on the prefix
+    rather than on the configured mode means a config half-converted between
+    modes still opens."""
+    if not _is_encrypted(stored):
         return stored or ""
     try:
+        if stored.startswith(_MASTER_PREFIX):
+            return _master_decrypt(stored)
         blob = base64.b64decode(stored[len(_SECRET_PREFIX):])
         return _dpapi_call(ctypes.windll.crypt32.CryptUnprotectData,
                            blob).decode("utf-8")
@@ -1760,6 +2305,19 @@ def decrypt_secret(stored):
 
 
 _SECRET_FIELDS = ("password", "totp_secret")
+
+
+def decrypt_cfg_secrets(cfg):
+    for c in cfg.get("characters", []):
+        for k in _SECRET_FIELDS:
+            if c.get(k):
+                c[k] = decrypt_secret(c[k])
+
+
+def cfg_has_encrypted_secrets(cfg):
+    return any(_is_encrypted(c.get(k))
+               for c in cfg.get("characters", [])
+               for k in _SECRET_FIELDS)
 
 
 # ── system-clock drift (TOTP depends on it) ────────────────────────────────────
@@ -1838,15 +2396,19 @@ def is_update_available(latest_tag):
 class App:
     def __init__(self, root):
         self.root = root
-        self.cfg = load_cfg()
+        # Read without decrypting: master mode needs a themed password prompt,
+        # and the theme is only known once the config has been read.
+        self.cfg = load_cfg(decrypt=False)
         apply_theme(self.cfg.get("theme", "light"))
         set_lang(self.cfg.get("lang", "ru"))
         self.search_var = tk.StringVar()
         self.count_var  = tk.StringVar()
+        self.summary_var = tk.StringVar()
         self._tray_icon = None
         self._banners = {}   # kind -> dict(text, action_label, action, accent)
         self._card = None
         self._card_row = None
+        self._last_launch = {}   # entry key -> time.monotonic() of last launch
         root.title(APP_TITLE)
         root.geometry(self.cfg.get("win_geometry") or f"{WIN_W}x{WIN_H}")
         root.minsize(780, 480)
@@ -1857,9 +2419,119 @@ class App:
             root.iconbitmap(_bundled("wow.ico"))
         except Exception:
             pass
+        self._unlock_secrets()
+        FALLBACK_REALMLIST[0] = (self.cfg.get("realmlist")
+                                 or REALMLISTS_DEFAULT[0])
         self.build()
         self._setup_tray()
         self._start_background_checks()
+
+    # ── secrets ─────────────────────────────────────────────────────────────
+
+    def _ask_password(self, title, prompt, confirm_prompt=None):
+        """Modal password box in the app's own theme. Returns the string, or
+        None if the user backed out."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title(title)
+        dlg.configure(bg=BG)
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        result = {"value": None}
+
+        tk.Label(dlg, text=title, bg=BG, fg=TEXT,
+                 font=("Segoe UI", 12, "bold")
+                 ).pack(padx=20, pady=(16, 6), anchor="w")
+        tk.Label(dlg, text=prompt, bg=BG, fg=MUTED, font=("Segoe UI", 9),
+                 justify="left", wraplength=340
+                 ).pack(padx=20, anchor="w")
+
+        v1 = tk.StringVar()
+        e1 = _make_entry(dlg, v1, show="●")
+        e1.pack(fill="x", padx=20, pady=(8, 0), ipady=5)
+        v2 = None
+        if confirm_prompt:
+            tk.Label(dlg, text=confirm_prompt, bg=BG, fg=MUTED,
+                     font=("Segoe UI", 9)).pack(fill="x", padx=20, pady=(8, 0))
+            v2 = tk.StringVar()
+            _make_entry(dlg, v2, show="●").pack(fill="x", padx=20, ipady=5)
+
+        err_var = tk.StringVar()
+        tk.Label(dlg, textvariable=err_var, bg=BG, fg="#D9534F",
+                 font=("Segoe UI", 9), wraplength=340, justify="left"
+                 ).pack(fill="x", padx=20, pady=(4, 0))
+
+        def ok(_e=None):
+            pw = v1.get()
+            if v2 is not None:
+                if pw != v2.get():
+                    err_var.set(t("Пароли не совпадают."))
+                    return
+                if len(pw) < MASTER_MIN_LEN:
+                    err_var.set(t("Пароль слишком короткий — минимум {n} "
+                                  "символов.").format(n=MASTER_MIN_LEN))
+                    return
+            result["value"] = pw
+            dlg.destroy()
+
+        row = tk.Frame(dlg, bg=BG)
+        row.pack(fill="x", padx=20, pady=(12, 16))
+        tk.Button(row, text=t("ОК"), bg=PRIMARY_BG, fg=PRIMARY_FG,
+                  relief="flat", padx=18, pady=6, command=ok
+                  ).pack(side="right")
+        tk.Button(row, text=t("Отмена"), bg=BTN_BG, fg=TEXT, relief="flat",
+                  padx=14, pady=6, command=dlg.destroy
+                  ).pack(side="right", padx=(0, 8))
+
+        e1.bind("<Return>", ok)
+        e1.focus_set()
+        self._fit_dialog(dlg, 400)
+        dlg.grab_set()
+        self.root.wait_window(dlg)
+        return result["value"]
+
+    def _unlock_secrets(self):
+        """Master mode: ask for the password until it opens the config, or the
+        user gives up. Everything that needs a password stays blocked until it
+        does."""
+        global SECRETS_LOCKED
+        if secret_mode(self.cfg) != "master":
+            decrypt_cfg_secrets(self.cfg)
+            SECRETS_LOCKED = False
+            return True
+        try:
+            salt = base64.b64decode(self.cfg.get("master_salt") or "")
+        except Exception:
+            salt = b""
+        expect = self.cfg.get("master_check") or ""
+        if not (salt and expect):
+            # Mode says master but the key material is gone — treat what's in
+            # the file as whatever it is and let the user fix it in Settings.
+            decrypt_cfg_secrets(self.cfg)
+            SECRETS_LOCKED = cfg_has_encrypted_secrets(self.cfg)
+            return not SECRETS_LOCKED
+
+        prompt = t("Пароли и 2FA-секреты зашифрованы мастер-паролем.")
+        while True:
+            pw = self._ask_password(t("Введи мастер-пароль"), prompt)
+            if pw is None:
+                SECRETS_LOCKED = True
+                self._add_banner(
+                    "locked",
+                    t("Пароли заблокированы — мастер-пароль не введён."),
+                    t("Ввести пароль"), self._relock_prompt, accent="#D9534F")
+                return False
+            key = derive_master_key(pw, salt)
+            if hmac.compare_digest(master_verifier(key), expect):
+                set_master_key(key)
+                decrypt_cfg_secrets(self.cfg)
+                SECRETS_LOCKED = False
+                self._dismiss_banner("locked")
+                return True
+            prompt = t("Неверный пароль.")
+
+    def _relock_prompt(self):
+        if self._unlock_secrets():
+            self.render_rows()
 
     # ── top banners (clock drift, updates) ──────────────────────────────────
 
@@ -1919,6 +2591,35 @@ class App:
                     lambda u=(url or RELEASES_URL): webbrowser.open(u),
                     accent="#7FB7E8")
 
+        def _realms():
+            """Keep REALM_STATUS fresh. Only redraws when something actually
+            changed, so a stable ping doesn't repaint the table every minute."""
+            while True:
+                try:
+                    hosts = {(c.get("realmlist") or "").strip()
+                             for c in self.cfg.get("characters", [])}
+                    hosts.add((self.cfg.get("realmlist") or "").strip())
+                    hosts.discard("")
+                    changed = False
+                    for host in hosts:
+                        ms = probe_realm(host)
+                        fresh = {"ok": ms is not None, "ms": ms or 0,
+                                 "at": time.time()}
+                        prev = REALM_STATUS.get(host)
+                        if (not prev or prev["ok"] != fresh["ok"]
+                                or abs(prev["ms"] - fresh["ms"]) > 25):
+                            changed = True
+                        REALM_STATUS[host] = fresh
+                    if changed:
+                        self.root.after(0, self.render_rows)
+                except Exception:
+                    pass
+                time.sleep(REALM_PROBE_INTERVAL)
+
+        threading.Thread(
+            target=lambda: drop_stale_autologin_json(self.cfg.get("wow_path", "")),
+            daemon=True).start()
+        threading.Thread(target=_realms, daemon=True).start()
         threading.Thread(target=_clock, daemon=True).start()
         threading.Thread(target=_update, daemon=True).start()
         threading.Thread(target=self._refresh_ingame, daemon=True).start()
@@ -2043,6 +2744,11 @@ class App:
         tk.Button(toolbar, text=t("Настройки"), bg=BTN_BG, fg=TEXT,
                   relief="flat", padx=14, pady=7, command=self.settings
                   ).pack(side="right")
+
+        # Everything the addon collected, added up across the whole roster.
+        tk.Label(self.root, textvariable=self.summary_var, bg=BG, fg=MUTED,
+                 font=("Segoe UI", 9), anchor="w"
+                 ).pack(fill="x", padx=18, pady=(0, 8))
 
         # ── Characters table (configurable columns) ──────────────────────────
         self._cols = [c for c in self.cfg.get("columns", DEFAULT_COLUMNS)
@@ -2343,7 +3049,40 @@ class App:
 
         self.count_var.set(t("Персонажей: {c} · Аккаунтов: {a}").format(
             c=len(chars), a=len(accounts)))
+        self.summary_var.set(self._account_summary())
         self._refresh_tray()
+
+    def _account_summary(self):
+        """One line over the whole roster: total gold, best geared character,
+        total time played. Built from what the addon already collects, so it
+        costs nothing extra."""
+        def as_int(v):
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                return 0
+
+        gold = played = seen = 0
+        best = None
+        for c in self.cfg.get("characters", []):
+            rec = INGAME.get(str(c.get("name", "")).lower())
+            if not rec:
+                continue
+            seen += 1
+            gold += as_int(rec.get("gold"))
+            played += as_int(rec.get("played"))
+            gs = as_int(rec.get("gs"))
+            if gs and (best is None or gs > best[1]):
+                best = (rec.get("name") or c.get("name", ""), gs)
+        if not seen:
+            return t("Данных пока нет — зайди в игру с аддоном.")
+        parts = [t("Всего золота: {g}").format(g=fmt_gold(gold))]
+        if best:
+            parts.append(t("Лучший ГС: {n} ({gs})").format(n=best[0],
+                                                           gs=best[1]))
+        if played:
+            parts.append(t("Наиграно: {t}").format(t=_fmt_played(played)))
+        return "     •     ".join(parts)
 
     def _safe_sashpos(self, pos):
         try:
@@ -2487,6 +3226,9 @@ class App:
 
         rec = INGAME.get(str(char.get("name", "")).lower())
         labels = self.cfg.get("card_labels", {})
+        row(t("Статус") + ":", "%s — %s" % (
+            char.get("realmlist") or FALLBACK_REALMLIST[0],
+            realm_status_text(char.get("realmlist", ""))))
 
         def field_label(key):
             return labels.get(key) or t(CARD_LABELS.get(key, key))
@@ -2534,15 +3276,28 @@ class App:
                     if profs:
                         row(field_label(key) + ":",
                             ", ".join(str(p) for p in profs[:4]))
+                elif key == "arenaTeams":
+                    teams = rec.get("arenaTeams") or []
+                    if isinstance(teams, dict):
+                        teams = [v for _k, v in sorted(teams.items())]
+                    printed = False
+                    for tm in teams:
+                        if not isinstance(tm, dict):
+                            continue
+                        if not printed:
+                            tk.Label(body, text=field_label(key) + ":",
+                                     bg=PANEL, fg=MUTED, font=F).pack(
+                                         anchor="w", padx=PX, pady=(4, 0))
+                            printed = True
+                        size = tm.get("size") or "?"
+                        tk.Label(body, bg=PANEL, fg=TEXT, font=F,
+                                 text="  " + t("{size} — рейтинг {r}, игр {n}")
+                                 .format(size="%sx%s" % (size, size),
+                                         r=int(tm.get("rating") or 0),
+                                         n=int(tm.get("mine") or 0))
+                                 ).pack(anchor="w", padx=PX, pady=0)
                 else:
-                    v = rec.get(key)
-                    if v in (None, ""):
-                        continue
-                    if key == "gold":
-                        v = fmt_gold(v)
-                    elif key == "played":
-                        v = _fmt_played(v)
-                    row(field_label(key) + ":", v)
+                    row(field_label(key) + ":", _ig_display(rec, key, long=True))
 
         tk.Frame(body, bg=PANEL, height=5).pack()
 
@@ -2650,6 +3405,21 @@ class App:
         self.root.after(0, lambda m=msg: messagebox.showerror(APP_TITLE, m))
 
     def _launch_char(self, char):
+        if SECRETS_LOCKED:
+            messagebox.showwarning(
+                APP_TITLE,
+                t("Пароли заблокированы. Введи мастер-пароль, чтобы запускать "
+                  "игру."))
+            self._relock_prompt()
+            return
+        # An impatient second double-click used to start a second client on the
+        # same account; the server then drops one of the two sessions and the
+        # player lands back on character select.
+        key = "%s|%s" % (char.get("name", ""), char.get("account", ""))
+        now = time.monotonic()
+        if now - self._last_launch.get(key, float("-inf")) < LAUNCH_COOLDOWN_SEC:
+            return
+        self._last_launch[key] = now
         try:
             launch_wow(self.cfg, char, on_error=self._async_err)
         except Exception as e:
@@ -3120,6 +3890,211 @@ class App:
 
     # ── backup settings dialog ──────────────────────────────────────────────
 
+    def roster_dialog(self, parent):
+        """The whole roster as text an officer can paste into a forum post."""
+        if not roster_rows(self.cfg):
+            messagebox.showinfo(
+                APP_TITLE,
+                t("Нет персонажей с данными. Зайди в игру с аддоном хотя бы "
+                  "раз."), parent=parent)
+            return
+
+        dlg = tk.Toplevel(parent)
+        dlg.title(t("Ростер"))
+        dlg.configure(bg=BG)
+        dlg.grab_set()
+
+        top = tk.Frame(dlg, bg=BG)
+        top.pack(fill="x", padx=16, pady=(14, 6))
+        tk.Label(top, text=t("Формат:"), bg=BG, fg=MUTED,
+                 font=("Segoe UI", 9)).pack(side="left")
+        fmt_var = tk.StringVar(value=ROSTER_FORMATS[0])
+        fmt_cb = ttk.Combobox(top, textvariable=fmt_var,
+                              values=list(ROSTER_FORMATS), state="readonly",
+                              width=12, font=("Segoe UI", 9))
+        fmt_cb.pack(side="left", padx=(8, 0))
+
+        text = tk.Text(dlg, height=18, width=90, bg=ENTRY_BG, fg=TEXT,
+                       relief="flat", highlightthickness=1,
+                       highlightbackground=BORDER, wrap="none",
+                       font=("Consolas", 9))
+        text.pack(fill="both", expand=True, padx=16)
+
+        def render(_e=None):
+            text.delete("1.0", "end")
+            text.insert("1.0", format_roster(self.cfg, fmt_var.get()))
+        fmt_cb.bind("<<ComboboxSelected>>", render)
+        render()
+
+        def copy():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text.get("1.0", "end-1c"))
+            messagebox.showinfo(APP_TITLE,
+                                t("Скопировано в буфер обмена."), parent=dlg)
+
+        def save():
+            path = filedialog.asksaveasfilename(
+                parent=dlg, title=t("Сохранить ростер"), defaultextension=".txt",
+                filetypes=[("Text", "*.txt"), ("All files", "*.*")])
+            if not path:
+                return
+            try:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(text.get("1.0", "end-1c"))
+                messagebox.showinfo(APP_TITLE,
+                                    t("Сохранено:\n{p}").format(p=path),
+                                    parent=dlg)
+            except OSError as e:
+                messagebox.showerror(APP_TITLE, str(e), parent=dlg)
+
+        row = tk.Frame(dlg, bg=BG)
+        row.pack(fill="x", padx=16, pady=(8, 14))
+        tk.Button(row, text=t("Копировать"), bg=PRIMARY_BG, fg=PRIMARY_FG,
+                  relief="flat", padx=16, pady=6, command=copy
+                  ).pack(side="left")
+        tk.Button(row, text=t("Сохранить в файл…"), bg=BTN_BG, fg=TEXT,
+                  relief="flat", padx=14, pady=6, command=save
+                  ).pack(side="left", padx=(8, 0))
+        tk.Button(row, text=t("Закрыть"), bg=BTN_BG, fg=TEXT, relief="flat",
+                  padx=14, pady=6, command=dlg.destroy).pack(side="right")
+
+    def wtf_transfer_dialog(self, parent):
+        """Copy one character's UI / keybinds / addon settings onto others."""
+        wow = self.cfg.get("wow_path", "")
+        chars = list_wtf_characters(wow)
+        if not chars:
+            messagebox.showinfo(APP_TITLE,
+                                t("В папке WTF нет ни одного персонажа."),
+                                parent=parent)
+            return
+
+        labels = ["%s / %s / %s" % (a, r, c) for a, r, c, _p in chars]
+        paths = [p for _a, _r, _c, p in chars]
+
+        dlg = tk.Toplevel(parent)
+        dlg.title(t("Перенос настроек персонажа"))
+        dlg.configure(bg=BG)
+        dlg.grab_set()
+
+        tk.Label(dlg, text=t("Откуда:"), bg=BG, fg=MUTED,
+                 font=("Segoe UI", 9)).pack(fill="x", padx=18, pady=(14, 0))
+        src_var = tk.StringVar(value=labels[0])
+        ttk.Combobox(dlg, textvariable=src_var, values=labels,
+                     state="readonly", font=("Segoe UI", 9)
+                     ).pack(fill="x", padx=18, ipady=3)
+
+        tk.Label(dlg, text=t("Куда (можно выбрать несколько):"), bg=BG,
+                 fg=MUTED, font=("Segoe UI", 9)
+                 ).pack(fill="x", padx=18, pady=(10, 0))
+        list_wrap = tk.Frame(dlg, bg=BG)
+        list_wrap.pack(fill="both", expand=True, padx=18)
+        targets = tk.Listbox(list_wrap, selectmode="extended", height=9,
+                             bg=ENTRY_BG, fg=TEXT, relief="flat",
+                             highlightthickness=1, highlightbackground=BORDER,
+                             font=("Segoe UI", 9), exportselection=False)
+        targets.pack(side="left", fill="both", expand=True)
+        tsb = ttk.Scrollbar(list_wrap, orient="vertical",
+                            command=targets.yview)
+        tsb.pack(side="right", fill="y")
+        targets.configure(yscrollcommand=tsb.set)
+        for lb in labels:
+            targets.insert("end", lb)
+
+        tk.Label(dlg, text=t("Что переносить:"), bg=BG, fg=MUTED,
+                 font=("Segoe UI", 9)).pack(fill="x", padx=18, pady=(10, 0))
+        group_vars = {}
+        for key, label, _names in WTF_GROUPS:
+            var = tk.BooleanVar(value=(key in ("config", "addons")))
+            group_vars[key] = var
+            tk.Checkbutton(dlg, text=t(label), variable=var, bg=BG, fg=TEXT,
+                           activebackground=BG, activeforeground=TEXT,
+                           selectcolor=ENTRY_BG, font=("Segoe UI", 9),
+                           anchor="w"
+                           ).pack(fill="x", padx=22)
+
+        tk.Label(dlg,
+                 text=t("Перед переносом делается бэкап WTF — его можно "
+                        "откатить в «Настройки → Авто-бэкап → Восстановить»."),
+                 bg=BG, fg=MUTED, font=("Segoe UI", 8), justify="left",
+                 wraplength=440, anchor="w"
+                 ).pack(fill="x", padx=18, pady=(8, 0))
+
+        status_var = tk.StringVar()
+        tk.Label(dlg, textvariable=status_var, bg=BG, fg=MUTED,
+                 font=("Segoe UI", 9)).pack(fill="x", padx=18)
+
+        btn_row = tk.Frame(dlg, bg=BG)
+        btn_row.pack(fill="x", padx=18, pady=(10, 16))
+        apply_btn = tk.Button(btn_row, text=t("Применить"), bg=PRIMARY_BG,
+                              fg=PRIMARY_FG, relief="flat", padx=16, pady=6)
+        apply_btn.pack(side="left")
+        tk.Button(btn_row, text=t("Закрыть"), bg=BTN_BG, fg=TEXT,
+                  relief="flat", padx=14, pady=6, command=dlg.destroy
+                  ).pack(side="right")
+
+        def finish(copied, errors):
+            apply_btn.configure(state="normal")
+            status_var.set("")
+            if errors:
+                messagebox.showwarning(
+                    APP_TITLE,
+                    t("Готово, но с ошибками ({e}). Скопировано файлов: {n}"
+                      ).format(e=len(errors), n=copied), parent=dlg)
+            else:
+                messagebox.showinfo(
+                    APP_TITLE,
+                    t("Готово. Скопировано файлов: {n}").format(n=copied),
+                    parent=dlg)
+
+        def apply():
+            # The client rewrites the whole WTF tree when it exits, so copying
+            # underneath a running one just gets silently undone.
+            if is_wow_running():
+                messagebox.showwarning(
+                    APP_TITLE,
+                    t("Сначала закрой все окна WoW — клиент перезапишет WTF "
+                      "при выходе."), parent=dlg)
+                return
+            sel = targets.curselection()
+            try:
+                src_idx = labels.index(src_var.get())
+            except ValueError:
+                src_idx = -1
+            dst = [paths[i] for i in sel if i != src_idx]
+            if src_idx < 0 or not dst:
+                messagebox.showwarning(
+                    APP_TITLE, t("Выбери источник и хотя бы одного получателя."),
+                    parent=dlg)
+                return
+            groups = [k for k, v in group_vars.items() if v.get()]
+            if not groups:
+                messagebox.showwarning(APP_TITLE,
+                                       t("Выбери, что переносить."), parent=dlg)
+                return
+            if not messagebox.askyesno(
+                    APP_TITLE,
+                    t("Перенести настройки «{src}» на выбранных персонажей "
+                      "({n})?\nИх текущие настройки будут перезаписаны."
+                      ).format(src=src_var.get(), n=len(dst)), parent=dlg):
+                return
+
+            apply_btn.configure(state="disabled")
+            status_var.set(t("Переношу…"))
+            src_path = paths[src_idx]
+
+            def work():
+                # interval 0 forces a snapshot even if one was just taken
+                _backup_game_data(wow, _backup_dest_root(self.cfg, wow),
+                                  max(1, int(self.cfg.get("backup_keep", 3) or 3)),
+                                  0)
+                copied, errors = copy_wtf_settings(src_path, dst, groups)
+                self.root.after(0, lambda: finish(copied, errors))
+
+            threading.Thread(target=work, daemon=True).start()
+
+        apply_btn.configure(command=apply)
+        self._fit_dialog(dlg, 480)
+
     def backup_settings(self, parent):
         dlg = tk.Toplevel(parent)
         dlg.title(t("Настройки бэкапа"))
@@ -3434,15 +4409,63 @@ class App:
             self.render_rows()
             reload_settings_dialog()
 
-        # ── Encrypt secrets toggle ───────────────────────────────────────────
-        encrypt_var = tk.BooleanVar(
-            value=bool(self.cfg.get("encrypt_secrets", True)))
-        tk.Checkbutton(
-            body, text=t("Шифровать пароли (привязать к этому ПК)"),
-            variable=encrypt_var, bg=BG, fg=TEXT, activebackground=BG,
-            activeforeground=TEXT, selectcolor=ENTRY_BG,
-            font=("Segoe UI", 9), anchor="w"
-        ).pack(fill="x", padx=18, pady=(8, 0))
+        # ── How secrets are stored ───────────────────────────────────────────
+        mode_labels = {"dpapi":  t("Ключ Windows (этот ПК)"),
+                       "master": t("Мастер-пароль"),
+                       "plain":  t("Без шифрования")}
+        mode_rev = {v: k for k, v in mode_labels.items()}
+        secret_row = tk.Frame(body, bg=BG)
+        secret_row.pack(fill="x", padx=18, pady=(10, 0))
+        tk.Label(secret_row, text=t("Хранение паролей:"), bg=BG, fg=MUTED,
+                 font=("Segoe UI", 9)).pack(side="left")
+        secret_var = tk.StringVar(
+            value=mode_labels[secret_mode(self.cfg)])
+        secret_cb = ttk.Combobox(secret_row, textvariable=secret_var,
+                                 values=list(mode_labels.values()),
+                                 state="readonly", width=24,
+                                 font=("Segoe UI", 9))
+        secret_cb.pack(side="left", padx=(8, 8))
+        master_btn = tk.Button(secret_row, bg=BTN_BG, fg=TEXT, relief="flat",
+                               padx=10, pady=2)
+        master_btn.pack(side="left")
+
+        # Pending master key, applied only if the user actually saves.
+        new_master = {"key": None, "salt": None}
+
+        def set_master():
+            pw = self._ask_password(
+                t("Новый мастер-пароль"),
+                t("Мастер-пароль делает конфиг переносимым: его можно взять "
+                  "на другой ПК, но без пароля он бесполезен."),
+                confirm_prompt=t("Повтори пароль"))
+            if not pw:
+                return
+            salt = os.urandom(16)
+            new_master["salt"] = salt
+            new_master["key"] = derive_master_key(pw, salt)
+            messagebox.showinfo(
+                APP_TITLE,
+                t("Мастер-пароль задан. Не потеряй его — восстановить нечем."),
+                parent=dlg)
+            refresh_master_btn()
+
+        def refresh_master_btn(_e=None):
+            is_master = mode_rev.get(secret_var.get()) == "master"
+            has_key = bool(self.cfg.get("master_check")) or new_master["key"]
+            master_btn.configure(
+                text=(t("Сменить мастер-пароль…") if has_key
+                      else t("Задать мастер-пароль…")),
+                command=set_master,
+                state=("normal" if is_master else "disabled"))
+
+        secret_cb.bind("<<ComboboxSelected>>", refresh_master_btn)
+        refresh_master_btn()
+        tk.Label(body,
+                 text=t("Мастер-пароль делает конфиг переносимым: его можно "
+                        "взять на другой ПК, но без пароля он бесполезен."),
+                 bg=BG, fg=MUTED, font=("Segoe UI", 8), justify="left",
+                 wraplength=520, anchor="w"
+                 ).pack(fill="x", padx=18, pady=(2, 0))
 
         backup_var = tk.BooleanVar(value=bool(self.cfg.get("backup_wtf", False)))
         backup_row = tk.Frame(body, bg=BG)
@@ -3457,6 +4480,17 @@ class App:
                   relief="flat", padx=10, pady=2,
                   command=lambda: self.backup_settings(dlg)
                   ).pack(side="right")
+
+        tools_row = tk.Frame(body, bg=BG)
+        tools_row.pack(fill="x", padx=18, pady=(8, 0))
+        tk.Button(tools_row, text=t("Ростер для форума…"), bg=BTN_BG, fg=TEXT,
+                  relief="flat", padx=10, pady=2,
+                  command=lambda: self.roster_dialog(dlg)
+                  ).pack(side="left")
+        tk.Button(tools_row, text=t("Перенос настроек…"), bg=BTN_BG, fg=TEXT,
+                  relief="flat", padx=10, pady=2,
+                  command=lambda: self.wtf_transfer_dialog(dlg)
+                  ).pack(side="left", padx=(8, 0))
 
         # ── UI extras ────────────────────────────────────────────────────────
         hover_var = tk.BooleanVar(value=bool(self.cfg.get("hover_card", True)))
@@ -3578,7 +4612,36 @@ class App:
                 if self.cfg.get("realmlist") not in realmlists_new:
                     self.cfg["realmlist"] = realmlists_new[0]
             self.cfg["use_loader"]      = bool(loader_var.get())
-            self.cfg["encrypt_secrets"] = bool(encrypt_var.get())
+
+            # Secret storage. Switching modes re-encrypts on the next save,
+            # because the in-memory config already holds plaintext.
+            chosen = mode_rev.get(secret_var.get(), "dpapi")
+            if chosen != secret_mode(self.cfg) and SECRETS_LOCKED:
+                # Re-encrypting needs the plaintext, and we never got it.
+                messagebox.showwarning(
+                    APP_TITLE,
+                    t("Сейчас пароли заблокированы — сначала введи "
+                      "мастер-пароль, иначе их нечем перешифровать."),
+                    parent=dlg)
+                return
+            if chosen == "master":
+                if new_master["key"] is not None:
+                    set_master_key(new_master["key"])
+                    self.cfg["master_salt"] = base64.b64encode(
+                        new_master["salt"]).decode("ascii")
+                    self.cfg["master_check"] = master_verifier(
+                        new_master["key"])
+                elif not (have_master_key() and self.cfg.get("master_check")):
+                    messagebox.showwarning(
+                        APP_TITLE,
+                        t("Сначала задай мастер-пароль кнопкой справа от "
+                          "списка."), parent=dlg)
+                    return
+            else:
+                self.cfg["master_salt"] = ""
+                self.cfg["master_check"] = ""
+                set_master_key(None)
+            self.cfg["secret_mode"]     = chosen
             self.cfg["backup_wtf"]      = bool(backup_var.get())
             self.cfg["hover_card"]      = bool(hover_var.get())
             self.cfg["overlay"]         = bool(overlay_var.get())
@@ -3601,10 +4664,40 @@ class App:
 _SINGLE_INSTANCE_PORT = 47823     # arbitrary, picked from the private range
 _MSG_SHOW   = b"WowManagerShow"
 _MSG_LAUNCH = b"WowManagerLaunch:"  # followed by a utf-8 entry name/account
+_TOKEN_FILE = "ipc.token"
+
+
+def _ipc_token():
+    """Shared secret every IPC message must carry. Anything on this machine can
+    connect to a localhost port, and a LAUNCH message starts the game with the
+    user's stored credentials — so a caller has to prove it can read our config
+    directory before we act on it."""
+    path = os.path.join(_config_dir(), _TOKEN_FILE)
+    try:
+        with open(path, "rb") as fh:
+            tok = fh.read().strip()
+        if len(tok) >= 16:
+            return tok
+    except OSError:
+        pass
+    tok = base64.urlsafe_b64encode(os.urandom(24)).strip()
+    try:
+        os.makedirs(_config_dir(), exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(tok)
+        return tok
+    except OSError:
+        # Can't persist one — both copies still need to agree on something, so
+        # derive it from what they do share. Weaker, but it keeps the "second
+        # copy brings the first one forward" behaviour working.
+        seed = (os.path.abspath(_config_dir()) + "|"
+                + os.environ.get("USERNAME", "")).encode("utf-8", "replace")
+        return base64.urlsafe_b64encode(hashlib.sha256(seed).digest()[:24])
 
 
 def _send_to_existing(msg):
     """Send `msg` to a running instance. Return True if one answered."""
+    msg = _ipc_token() + b"|" + msg
     try:
         c = socket.create_connection(("127.0.0.1", _SINGLE_INSTANCE_PORT),
                                      timeout=0.5)
@@ -3631,12 +4724,25 @@ def _start_single_instance_listener(on_show, on_launch):
         sys.exit(0)
     srv.listen(4)
 
+    token = _ipc_token()
+
     def loop():
         while True:
             try:
                 conn, _ = srv.accept()
                 with conn:
-                    data = conn.recv(512)
+                    conn.settimeout(1.0)
+                    chunks = []
+                    while len(b"".join(chunks)) < 4096:
+                        part = conn.recv(1024)
+                        if not part:
+                            break
+                        chunks.append(part)
+                    data = b"".join(chunks)
+                prefix = token + b"|"
+                if not data.startswith(prefix):
+                    continue
+                data = data[len(prefix):]
                 if data == _MSG_SHOW:
                     on_show()
                 elif data.startswith(_MSG_LAUNCH):

@@ -37,7 +37,7 @@ local function gsItemScore(link)
     if score < 0 then score = 0 end
     return score
 end
-function computeGearScore()
+local function computeGearScore()
     local total = 0
     for slot = 1, 18 do
         if slot ~= 4 then        -- skip shirt
@@ -52,7 +52,7 @@ end
 -- Every optional section is wrapped in pcall: if any WoW API errors on this
 -- server, the rest still collects and the record is ALWAYS saved (otherwise a
 -- single failing call would abort the whole thing and leave stale gold=0 data).
-local function try(fn) local ok = pcall(fn); return ok end
+local function try(fn) pcall(fn) end
 
 local function collect()
     if not UnitName("player") then return end
@@ -182,17 +182,329 @@ local function collect()
         d.bagFree = free
     end)
 
+    -- ── "что осталось на неделе" ────────────────────────────────────────────
+    -- Daily quest counter + when it rolls over. Both are plain client APIs, so
+    -- this works on any 3.3.5a server and in any locale.
+    try(function()
+        if GetDailyQuestsCompleted then
+            d.dailyDone = GetDailyQuestsCompleted()
+            d.dailyMax  = MAX_DAILY_QUESTS or 25
+        end
+        if GetQuestResetTime then
+            local left = GetQuestResetTime()
+            if left and left > 0 then d.dailyResetAt = time() + left end
+        end
+    end)
+
+    -- Arena games played THIS WEEK. GetArenaTeam returns the weekly counters
+    -- (team and personal); the season totals sit further along the same row.
+    try(function()
+        local teams, mineBest = {}, 0
+        for i = 1, (MAX_ARENA_TEAMS or 3) do
+            local name, size, rating, teamPlayed, _, _, _, mine = GetArenaTeam(i)
+            if name and size then
+                mine = mine or 0
+                teams[#teams + 1] = { size = size, rating = rating or 0,
+                                      played = teamPlayed or 0, mine = mine }
+                if mine > mineBest then mineBest = mine end
+            end
+        end
+        if #teams > 0 then
+            d.arenaTeams = teams
+            d.arenaGames = mineBest
+        end
+    end)
+
+    -- Quests sitting in the log already finished but never handed in.
+    try(function()
+        local done, total = 0, 0
+        for i = 1, (GetNumQuestLogEntries() or 0) do
+            local title, _, _, _, isHeader, _, isComplete = GetQuestLogTitle(i)
+            if title and not isHeader then
+                total = total + 1
+                if isComplete and isComplete > 0 then done = done + 1 end
+            end
+        end
+        d.questsDone, d.questsTotal = done, total
+    end)
+
     if WowManagerCharDB.played then d.played = WowManagerCharDB.played end
 
     WowManagerDB[ckey()] = d     -- ALWAYS save
 end
 
--- ── relog request (overlay) ────────────────────────────────────────────────
--- Write the target + quit; the manager sees the request after Wow.exe closes
--- and relaunches the chosen character/account.
+-- ── switching characters ───────────────────────────────────────────────────
+-- Two paths, and the fast one is worth a lot: logging out drops the client back
+-- to the character-select screen with the account session still alive, so the
+-- patch DLL can walk straight into the next character. Restarting the whole
+-- client is only needed when the target lives on a DIFFERENT account.
+--
+-- (Both paths still wait out the game's own 20s logout timer outside an inn —
+-- that is a server rule, not something an addon can skip.)
+
+local function sameAccountAs(entry)
+    local mine = WowManagerConfig and WowManagerConfig.currentAccount
+    return mine and mine ~= "" and entry.account and entry.account ~= ""
+           and entry.account:lower() == mine:lower()
+end
+
+-- Logging out lands us on the character select of the realm we are already
+-- connected to, so a character on a DIFFERENT realm is not reachable that way
+-- even on the same account. An entry with no realm set is assumed to be here.
+local function sameRealmAs(entry)
+    local want = entry.realm
+    if not want or want == "" then return true end
+    local here = GetRealmName()
+    return here and here:lower() == want:lower()
+end
+
+local function canSwitchInClient(entry)
+    return type(WowManagerSwitchCharacter) == "function"
+           and not entry.isAccount
+           and entry.name and entry.name ~= ""
+           and sameAccountAs(entry)
+           and sameRealmAs(entry)
+end
+
+-- Slow path: record the target + quit. The manager notices once Wow.exe has
+-- closed and relaunches the chosen character/account.
 local function requestRelog(account, char)
     WowManagerDB.__relog = { account = account, char = char, at = time() }
     Quit()
+end
+
+local function switchTo(entry)
+    if canSwitchInClient(entry) then
+        WowManagerSwitchCharacter(entry.name)
+        Logout()
+    else
+        requestRelog(entry.account, entry.name)
+    end
+end
+
+
+-- ── alts window ─────────────────────────────────────────────────────────────
+-- The whole roster inside the client: every character the manager knows about,
+-- what it is carrying, and one click to go play it. Built from
+-- WowManagerConfig, which the manager rewrites on every launch.
+
+local ALTS_ROWS   = 13      -- visible rows
+local ALTS_ROW_H  = 22
+local altsFrame, altsRows, altsSelected
+
+local function altsEntries()
+    local list = (WowManagerConfig and WowManagerConfig.characters) or {}
+    local chars, accs = {}, {}
+    for _, c in ipairs(list) do
+        if c.isAccount then accs[#accs + 1] = c else chars[#chars + 1] = c end
+    end
+    local out = {}
+    if #chars > 0 then
+        out[#out + 1] = { header = "Персонажи" }
+        for _, c in ipairs(chars) do out[#out + 1] = { entry = c } end
+    end
+    if #accs > 0 then
+        out[#out + 1] = { header = "Аккаунты" }
+        for _, c in ipairs(accs) do out[#out + 1] = { entry = c } end
+    end
+    return out
+end
+
+local function altsColored(c, text)
+    if c.color and c.color ~= "" then
+        return "|cff" .. c.color .. text .. "|r"
+    end
+    return text
+end
+
+local function altsShowDetails()
+    local c = altsSelected
+    if not c then
+        altsFrame.detail:SetText("|cff808080Выбери персонажа слева.|r")
+        altsFrame.goBtn:Disable()
+        return
+    end
+    local head = altsColored(c, c.name or "?")
+    if c.realm and c.realm ~= "" then
+        head = head .. "\n|cff808080" .. c.realm .. "|r"
+    end
+    local body = { head, " " }
+    if c.info and #c.info > 0 then
+        for _, line in ipairs(c.info) do body[#body + 1] = line end
+    else
+        body[#body + 1] = "|cff808080Нет данных из игры.|r"
+    end
+    altsFrame.detail:SetText(table.concat(body, "\n"))
+
+    if canSwitchInClient(c) then
+        altsFrame.goBtn:SetText("Зайти (без перезапуска)")
+    else
+        altsFrame.goBtn:SetText("Зайти (перезапуск клиента)")
+    end
+    altsFrame.goBtn:Enable()
+end
+
+local function altsRefresh()
+    if not (altsFrame and altsFrame:IsShown()) then return end
+    local items = altsEntries()
+    FauxScrollFrame_Update(altsFrame.scroll, #items, ALTS_ROWS, ALTS_ROW_H)
+    local offset = FauxScrollFrame_GetOffset(altsFrame.scroll)
+    for i = 1, ALTS_ROWS do
+        local row = altsRows[i]
+        local item = items[i + offset]
+        if not item then
+            row:Hide()
+        else
+            row:Show()
+            if item.header then
+                row.text:SetText("|cffffd100" .. item.header .. "|r")
+                row.sub:SetText("")
+                row.cdata = nil
+                row:Disable()
+            else
+                local c = item.entry
+                row.text:SetText(altsColored(c, c.name or "?"))
+                row.sub:SetText(c.summary or "")
+                row.cdata = c
+                row:Enable()
+            end
+            if altsSelected and row.cdata == altsSelected then
+                row.sel:Show()
+            else
+                row.sel:Hide()
+            end
+        end
+    end
+end
+
+local function createAltsFrame()
+    if altsFrame then return altsFrame end
+
+    local f = CreateFrame("Frame", "WowManagerAltsFrame", UIParent)
+    f:SetWidth(560); f:SetHeight(400)
+    f:SetPoint("CENTER")
+    f:SetFrameStrata("HIGH")
+    f:SetToplevel(true)
+    f:SetMovable(true); f:EnableMouse(true); f:SetClampedToScreen(true)
+    f:RegisterForDrag("LeftButton")
+    f:SetScript("OnDragStart", function(self) self:StartMoving() end)
+    f:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+    f:SetBackdrop({
+        bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+        tile = true, tileSize = 32, edgeSize = 32,
+        insets = { left = 11, right = 12, top = 12, bottom = 11 } })
+    f:Hide()
+
+    local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    title:SetPoint("TOP", 0, -16)
+    title:SetText("Менеджер персонажей")
+
+    local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+    close:SetPoint("TOPRIGHT", -8, -8)
+
+    -- left: the roster
+    local listBg = CreateFrame("Frame", nil, f)
+    listBg:SetPoint("TOPLEFT", 18, -46)
+    listBg:SetWidth(280); listBg:SetHeight(ALTS_ROWS * ALTS_ROW_H + 8)
+    listBg:SetBackdrop({
+        bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 12,
+        insets = { left = 3, right = 3, top = 3, bottom = 3 } })
+    listBg:SetBackdropColor(0, 0, 0, 0.45)
+
+    local scroll = CreateFrame("ScrollFrame", "WowManagerAltsScroll", listBg,
+                               "FauxScrollFrameTemplate")
+    scroll:SetPoint("TOPLEFT", 4, -4)
+    scroll:SetWidth(252); scroll:SetHeight(ALTS_ROWS * ALTS_ROW_H)
+    scroll:SetScript("OnVerticalScroll", function(self, offset)
+        FauxScrollFrame_OnVerticalScroll(self, offset, ALTS_ROW_H, altsRefresh)
+    end)
+    scroll:EnableMouseWheel(true)
+    scroll:SetScript("OnMouseWheel", function(self, delta)
+        local bar = _G[self:GetName() .. "ScrollBar"]
+        if bar then bar:SetValue(bar:GetValue() - delta * ALTS_ROW_H) end
+    end)
+    f.scroll = scroll
+
+    altsRows = {}
+    for i = 1, ALTS_ROWS do
+        local row = CreateFrame("Button", nil, listBg)
+        row:SetWidth(250); row:SetHeight(ALTS_ROW_H)
+        row:SetPoint("TOPLEFT", 5, -(4 + (i - 1) * ALTS_ROW_H))
+
+        local sel = row:CreateTexture(nil, "BACKGROUND")
+        sel:SetAllPoints()
+        sel:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+        sel:SetAlpha(0.6)
+        sel:Hide()
+        row.sel = sel
+
+        row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+
+        local text = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        text:SetPoint("LEFT", 4, 0)
+        text:SetJustifyH("LEFT")
+        row.text = text
+
+        local sub = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        sub:SetPoint("RIGHT", -6, 0)
+        sub:SetJustifyH("RIGHT")
+        row.sub = sub
+
+        row:SetScript("OnClick", function(self)
+            if not self.cdata then return end
+            altsSelected = self.cdata
+            altsRefresh()
+            altsShowDetails()
+        end)
+        row:SetScript("OnDoubleClick", function(self)
+            if self.cdata then f:Hide(); switchTo(self.cdata) end
+        end)
+        altsRows[i] = row
+    end
+
+    -- right: details of whatever is selected
+    local detailBg = CreateFrame("Frame", nil, f)
+    detailBg:SetPoint("TOPLEFT", listBg, "TOPRIGHT", 10, 0)
+    detailBg:SetWidth(232); detailBg:SetHeight(ALTS_ROWS * ALTS_ROW_H + 8)
+    detailBg:SetBackdrop({
+        bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 12,
+        insets = { left = 3, right = 3, top = 3, bottom = 3 } })
+    detailBg:SetBackdropColor(0, 0, 0, 0.45)
+
+    local detail = detailBg:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    detail:SetPoint("TOPLEFT", 8, -8)
+    detail:SetWidth(216)
+    detail:SetJustifyH("LEFT"); detail:SetJustifyV("TOP")
+    f.detail = detail
+
+    local goBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    goBtn:SetWidth(240); goBtn:SetHeight(24)
+    goBtn:SetPoint("BOTTOMRIGHT", -20, 20)
+    goBtn:SetScript("OnClick", function()
+        if altsSelected then f:Hide(); switchTo(altsSelected) end
+    end)
+    f.goBtn = goBtn
+
+    local hint = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    hint:SetPoint("BOTTOMLEFT", 22, 26)
+    hint:SetWidth(270); hint:SetJustifyH("LEFT")
+    hint:SetText("Двойной клик по строке — зайти сразу.")
+
+    tinsert(UISpecialFrames, "WowManagerAltsFrame")   -- Esc closes it
+    f:SetScript("OnShow", function() altsRefresh(); altsShowDetails() end)
+
+    altsFrame = f
+    return f
+end
+
+local function toggleAltsWindow()
+    local f = createAltsFrame()
+    if f:IsShown() then f:Hide() else f:Show() end
 end
 
 -- ── minimap button (overlay), draggable around the minimap edge ─────────────
@@ -248,17 +560,17 @@ local function createMinimapButton()
         tile = true, tileSize = 16, edgeSize = 16,
         insets = { left = 4, right = 4, top = 4, bottom = 4 } })
     menu:Hide()
-    local rows = {}
-    local ri = 0
+    local headers, rows = {}, {}
+    local hi, ri = 0, 0
 
-    local function addHeader(label, y, width)
-        ri = ri + 1
-        local r = rows[ri]
+    local function addHeader(label, y)
+        hi = hi + 1
+        local r = headers[hi]
         if not r then
             r = menu:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            rows[ri] = r
+            headers[hi] = r
         end
-        if r.SetScript then r:Hide() end
+        r:ClearAllPoints()
         r:SetPoint("TOPLEFT", 10, y)
         r:SetText(label)
         r:Show()
@@ -268,7 +580,7 @@ local function createMinimapButton()
     local function addRow(c, y, width)
         ri = ri + 1
         local r = rows[ri]
-        if not r or not r.SetScript then
+        if not r then
             r = CreateFrame("Button", nil, menu)
             r:SetHeight(18)
             local fs = r:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -278,6 +590,7 @@ local function createMinimapButton()
             rows[ri] = r
         end
         r:SetWidth(width - 16)
+        r:ClearAllPoints()
         r:SetPoint("TOPLEFT", 8, y)
         local label = c.name or "?"
         if c.color and c.color ~= "" then
@@ -285,13 +598,23 @@ local function createMinimapButton()
         end
         r.text:SetText(label)
         r.cdata = c
-        local acc, nm = c.account, c.name
-        r:SetScript("OnClick", function() menu:Hide(); requestRelog(acc, nm) end)
+        r:SetScript("OnClick", function() menu:Hide(); switchTo(c) end)
         r:SetScript("OnEnter", function(self)
             local cd = self.cdata
-            if not (WowManagerConfig and WowManagerConfig.hoverCard) then return end
-            if not (cd and cd.info and #cd.info > 0) then return end
+            if not cd then return end
+            local card = WowManagerConfig and WowManagerConfig.hoverCard
+                         and cd.info and #cd.info > 0
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            if not card then
+                GameTooltip:AddLine(cd.name or "?")
+                if canSwitchInClient(cd) then
+                    GameTooltip:AddLine("Без перезапуска клиента", 0.4, 1, 0.4)
+                else
+                    GameTooltip:AddLine("С перезапуском клиента", 1, 0.8, 0.3)
+                end
+                GameTooltip:Show()
+                return
+            end
             local title = cd.name or "?"
             if cd.color and cd.color ~= "" then
                 title = "|cff" .. cd.color .. title .. "|r"
@@ -299,6 +622,11 @@ local function createMinimapButton()
             GameTooltip:AddLine(title)
             for _, line in ipairs(cd.info) do
                 GameTooltip:AddLine(line, 1, 1, 1, true)
+            end
+            if canSwitchInClient(cd) then
+                GameTooltip:AddLine("Без перезапуска клиента", 0.4, 1, 0.4)
+            else
+                GameTooltip:AddLine("С перезапуском клиента", 1, 0.8, 0.3)
             end
             GameTooltip:Show()
         end)
@@ -308,8 +636,9 @@ local function createMinimapButton()
     end
 
     local function showMenu()
-        for _, r in ipairs(rows) do if r.Hide then r:Hide() end end
-        ri = 0
+        for _, r in ipairs(headers) do r:Hide() end
+        for _, r in ipairs(rows) do r:Hide() end
+        hi, ri = 0, 0
         local list = (WowManagerConfig and WowManagerConfig.characters) or {}
         local chars, accs = {}, {}
         for _, c in ipairs(list) do
@@ -317,12 +646,12 @@ local function createMinimapButton()
         end
         local y, width = -10, 180
         if #chars > 0 then
-            y = addHeader("|cffffd100Персонажи|r", y, width)
+            y = addHeader("|cffffd100Персонажи|r", y)
             for _, c in ipairs(chars) do y = addRow(c, y, width) end
         end
         if #accs > 0 then
             y = y - 4
-            y = addHeader("|cffffd100Аккаунты|r", y, width)
+            y = addHeader("|cffffd100Аккаунты|r", y)
             for _, c in ipairs(accs) do y = addRow(c, y, width) end
         end
         menu:SetWidth(width)
@@ -332,14 +661,21 @@ local function createMinimapButton()
         menu:Show()
     end
 
-    b:RegisterForClicks("LeftButtonUp")
-    b:SetScript("OnClick", function()
-        if menu:IsShown() then menu:Hide() else showMenu() end
+    b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    b:SetScript("OnClick", function(self, button)
+        menu:Hide()
+        if button == "RightButton" then
+            showMenu()
+        else
+            toggleAltsWindow()
+        end
     end)
     b:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
         GameTooltip:AddLine("WoW Manager")
-        GameTooltip:AddLine("Клик — перезайти, тащить — двигать", 1, 1, 1)
+        GameTooltip:AddLine("ЛКМ — окно персонажей", 1, 1, 1)
+        GameTooltip:AddLine("ПКМ — быстрое меню перезахода", 1, 1, 1)
+        GameTooltip:AddLine("Тащить — двигать кнопку", 1, 1, 1)
         GameTooltip:Show()
     end)
     b:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -366,6 +702,13 @@ local function startDelayedCollect()
     ticker:Show()
 end
 
+-- ── slash command ───────────────────────────────────────────────────────────
+-- Reachable even when the minimap button is switched off in the manager.
+SLASH_WOWMANAGER1 = "/wowmanager"
+SLASH_WOWMANAGER2 = "/wm"
+SlashCmdList["WOWMANAGER"] = function() toggleAltsWindow() end
+
+
 -- ── events ──────────────────────────────────────────────────────────────────
 local f = CreateFrame("Frame")
 f:RegisterEvent("PLAYER_LOGIN")
@@ -375,8 +718,14 @@ f:RegisterEvent("UPDATE_INSTANCE_INFO")
 f:RegisterEvent("CURRENCY_DISPLAY_UPDATE")
 f:RegisterEvent("TIME_PLAYED_MSG")
 f:RegisterEvent("PLAYER_ENTERING_WORLD")
+f:RegisterEvent("ARENA_TEAM_UPDATE")
+f:RegisterEvent("LOGOUT_CANCEL")
 f:SetScript("OnEvent", function(self, event, arg1)
     if event == "PLAYER_LOGIN" then
+        -- We are the session the manager relaunched (or the player just logged
+        -- in normally). Either way the pending request is spent — leaving it in
+        -- SavedVariables means the manager can act on it again later.
+        WowManagerDB.__relog = nil
         if RequestRaidInfo then RequestRaidInfo() end
         if RequestTimePlayed then RequestTimePlayed() end
         collect()
@@ -386,6 +735,12 @@ f:SetScript("OnEvent", function(self, event, arg1)
     elseif event == "PLAYER_ENTERING_WORLD" then
         collect()
         startDelayedCollect()         -- gold/currency arrive shortly after
+    elseif event == "LOGOUT_CANCEL" then
+        -- Player moved and the countdown stopped: drop the armed target so the
+        -- next, unrelated logout doesn't silently switch characters.
+        if type(WowManagerSwitchCharacter) == "function" then
+            WowManagerSwitchCharacter("")
+        end
     elseif event == "TIME_PLAYED_MSG" then
         WowManagerCharDB.played = arg1
         collect()
