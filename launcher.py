@@ -23,7 +23,7 @@ import webbrowser
 import zipfile
 from tkinter import filedialog, messagebox, ttk
 
-__version__ = "1.6.0"
+__version__ = "1.6.1"
 
 
 # Bail out immediately if a debugger is attached. This is a soft anti-RE
@@ -294,6 +294,37 @@ _EN = {
         "One friends and ignore list for all characters",
     "Поиск группы из чата (/wm lfg)": "Group finder from chat (/wm lfg)",
     "Графика при запуске": "Graphics on launch",
+    "Конструктор графики": "Graphics presets",
+    "Конструктор графики…": "Graphics presets…",
+    "Пресет меняет только отмеченные настройки, остальные останутся как в "
+    "игре.":
+        "A preset only changes the settings you tick; the rest stay as they "
+        "are in the game.",
+    "Новый": "New",
+    "Копия": "Copy",
+    "(встроенный)": "(built-in)",
+    "Мой пресет": "My preset",
+    "{name} — копия": "{name} — copy",
+    "Встроенный пресет нельзя удалить — сделай копию.":
+        "A built-in preset can't be deleted — make a copy instead.",
+    "Удалить пресет «{name}»?": "Delete preset «{name}»?",
+    "Готово": "Done",
+    "вкл": "on",
+    "выкл": "off",
+    "Дальность обзора": "View distance",
+    "Густота травы": "Ground clutter density",
+    "Дальность травы": "Ground clutter distance",
+    "Детализация окружения": "Environment detail",
+    "Частицы": "Particles",
+    "Погода": "Weather",
+    "Тени": "Shadows",
+    "Эффекты заклинаний": "Spell detail",
+    "Мелкие объекты": "Small objects",
+    "Проецируемые текстуры": "Projected textures",
+    "Ограничение FPS (0 — без него)": "FPS limit (0 = none)",
+    "FPS в фоне": "FPS in background",
+    "Звук": "Sound",
+    "Музыка": "Music",
     "Как в настройках игры": "As set in the game",
     "Как у аккаунта": "Same as the account",
     "Лёгкая": "Light",
@@ -313,9 +344,10 @@ _EN = {
     "Логин и пароль — персонажи подтянутся сами при первом входе в игру.":
         "Login and password — characters are picked up on your first login.",
     "Добавить аккаунт": "Add account",
-    "Двойной клик — играть  ·  ПКМ — все действия  ·  перетаскивание — "
-    "порядок":
-        "Double-click — play  ·  Right-click — all actions  ·  Drag — reorder",
+    "Двойной клик или Enter — играть  ·  ПКМ — все действия  ·  "
+    "перетаскивание — порядок":
+        "Double-click or Enter — play  ·  Right-click — all actions  ·  "
+        "Drag — reorder",
     "Войти в аккаунт": "Log in to account",
     "Добавить персонажа": "Add character",
     "Изменить аккаунт": "Edit account",
@@ -885,6 +917,19 @@ def _hwnd_of(win):
         return 0
 
 
+def virtual_screen(win):
+    """(left, top, width, height) of the whole desktop across monitors."""
+    if sys.platform == "win32":
+        try:
+            gsm = ctypes.windll.user32.GetSystemMetrics
+            w, h = gsm(78), gsm(79)           # SM_CXVIRTUALSCREEN / CY
+            if w > 0 and h > 0:
+                return gsm(76), gsm(77), w, h  # SM_XVIRTUALSCREEN / Y
+        except Exception:
+            pass
+    return 0, 0, win.winfo_screenwidth(), win.winfo_screenheight()
+
+
 def style_window_chrome(win, rounded=False):
     """Dark title bar to match a dark theme, and rounded corners for popups
     (Windows 11). Silently does nothing where DWM doesn't support it."""
@@ -1124,6 +1169,7 @@ def _default_cfg():
         "backup_dir":           "",   # empty = <wow_dir>/_WowManagerBackups
         # UI extras
         "hover_card":           True,    # info card on row hover (deploys addon)
+        "graphics_presets":     {},      # id -> {"name":…, "cvars": {…}}
         "laa_patch":            True,    # 4GB flag on Wow.exe (never removed)
         "anti_afk":             False,   # keep the character from going AFK
         "sync_friends":         True,    # one friends / ignore list for all alts
@@ -2431,17 +2477,99 @@ GRAPHICS_PRESETS = {
 GRAPHICS_LABELS = (("", "Как в настройках игры"), ("light", "Лёгкая"),
                    ("minimal", "Минимальная, без звука (фон / твинк)"))
 
+# What the preset builder can change: (cvar, label, kind, lo, hi, step, default).
+# Only client settings that take effect without restarting the graphics engine.
+GRAPHICS_SETTINGS = (
+    ("farclip", "Дальность обзора", "scale", 177, 1277, 10, 777),
+    ("groundEffectDensity", "Густота травы", "scale", 16, 256, 8, 64),
+    ("groundEffectDist", "Дальность травы", "scale", 1, 140, 5, 70),
+    ("environmentDetail", "Детализация окружения", "scale", 0.5, 1.5, 0.05, 1.0),
+    ("particleDensity", "Частицы", "scale", 0.1, 1.0, 0.1, 1.0),
+    ("weatherDensity", "Погода", "scale", 0, 3, 1, 2),
+    ("extShadowQuality", "Тени", "scale", 0, 5, 1, 2),
+    ("spellEffectLevel", "Эффекты заклинаний", "scale", 0, 2, 1, 1),
+    ("detailDoodadAlpha", "Мелкие объекты", "scale", 0, 100, 5, 100),
+    ("projectedTextures", "Проецируемые текстуры", "toggle", 0, 1, 1, 1),
+    ("maxFPS", "Ограничение FPS (0 — без него)", "scale", 0, 200, 5, 0),
+    ("maxFPSBk", "FPS в фоне", "scale", 0, 60, 5, 30),
+    ("Sound_EnableAllSound", "Звук", "toggle", 0, 1, 1, 1),
+    ("Sound_EnableMusic", "Музыка", "toggle", 0, 1, 1, 1),
+)
+GRAPHICS_SETTING_LABELS = {c: lbl for c, lbl, _k, _lo, _hi, _st, _d
+                           in GRAPHICS_SETTINGS}
+
+
+def gfx_value_str(value):
+    """Store numbers the way the client writes them: 1 not 1.0, 0.75 not 0.7500."""
+    text = ("%.2f" % float(value)).rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def user_presets(cfg):
+    presets = cfg.get("graphics_presets")
+    return presets if isinstance(presets, dict) else {}
+
+
+def preset_cvars(cfg, key):
+    """The CVars a preset applies — built-in or one the user built."""
+    if key in GRAPHICS_PRESETS:
+        return dict(GRAPHICS_PRESETS[key])
+    p = user_presets(cfg).get(key)
+    if isinstance(p, dict) and isinstance(p.get("cvars"), dict):
+        return {k: str(v) for k, v in p["cvars"].items()
+                if k in GRAPHICS_SETTING_LABELS}
+    return {}
+
+
+def preset_exists(cfg, key):
+    return key in GRAPHICS_PRESETS or key in user_presets(cfg)
+
+
+def preset_label(cfg, key):
+    for k, lbl in GRAPHICS_LABELS:
+        if k == key and k:
+            return t(lbl)
+    p = user_presets(cfg).get(key)
+    return (p.get("name") or key) if isinstance(p, dict) else key
+
+
+def graphics_options(cfg, for_character=False):
+    """(key, label) pairs for the preset pickers."""
+    if for_character:
+        opts = [("", t("Как у аккаунта")), ("none", t("Как в настройках игры"))]
+    else:
+        opts = [("", t("Как в настройках игры"))]
+    opts += [(k, t(lbl)) for k, lbl in GRAPHICS_LABELS if k]
+    opts += sorted(((k, preset_label(cfg, k)) for k in user_presets(cfg)),
+                   key=lambda kv: kv[1].lower())
+    return opts
+
+
+def new_preset_key(cfg):
+    n = 1
+    while ("my%d" % n) in user_presets(cfg):
+        n += 1
+    return "my%d" % n
+
+
+def drop_preset(cfg, key):
+    """Delete a user preset and forget it wherever it was assigned."""
+    cfg.setdefault("graphics_presets", {}).pop(key, None)
+    for e in cfg.get("characters", []):
+        if (e.get("graphics") or "") == key:
+            e["graphics"] = ""
+
 
 def effective_graphics(cfg, char):
     """A character's own preset, else its account's, else none."""
     own = (char.get("graphics") or "").strip()
     if own == "none":                # explicitly "as in the game" for this one
         return ""
-    if own in GRAPHICS_PRESETS:
+    if preset_exists(cfg, own):
         return own
     acc = account_entry_for(cfg, char.get("account")) or {}
     inherited = (acc.get("graphics") or "").strip()
-    return inherited if inherited in GRAPHICS_PRESETS else ""
+    return inherited if preset_exists(cfg, inherited) else ""
 
 
 _CVAR_LINE = re.compile(r'^\s*SET\s+(\S+)\s+"(.*)"\s*$', re.I)
@@ -2752,7 +2880,7 @@ def launch_wow(cfg, char, on_error=None):
     if cfg.get("anti_afk"):
         extra["antiafk"] = "1"
     preset = effective_graphics(cfg, char)
-    cvars = GRAPHICS_PRESETS.get(preset, {})
+    cvars = preset_cvars(cfg, preset) if preset else {}
     for name, value in cvars.items():
         extra["cvar_" + name] = value
     snapshot = read_config_cvars(wow_dir, cvars) if cvars else None
@@ -3050,7 +3178,8 @@ class App:
         self._card_row = None
         self._last_launch = {}   # entry key -> time.monotonic() of last launch
         root.title(APP_TITLE)
-        root.geometry(self.cfg.get("win_geometry") or f"{WIN_W}x{WIN_H}")
+        self._restore_geometry()
+        root.bind_class("Toplevel", "<Map>", self._on_toplevel_map, add="+")
         root.minsize(780, 480)
         root.configure(bg=BG)
         # Hide-to-tray on close, real exit via tray menu
@@ -3423,10 +3552,7 @@ class App:
         self.search_var.trace_add("write", lambda *_: self.render_rows())
         _placeholder()
 
-        self._btn_play = FlatButton(header, t("Играть"), icon="play",
-                                    kind="primary", command=self.launch_selected)
-        self._btn_play.pack(side="left", padx=(0, 8))
-        FlatButton(header, t("Аккаунт"), icon="add",
+        FlatButton(header, t("Аккаунт"), icon="add", kind="primary",
                    command=lambda: self.account_dialog(None)
                    ).pack(side="left", padx=(0, 8))
         FlatButton(header, t("Персонаж"), icon="add",
@@ -3515,8 +3641,8 @@ class App:
         footer = tk.Frame(self.root, bg=BG)
         footer.pack(fill="x", padx=20, pady=(0, 12))
         tk.Label(footer,
-                 text=t("Двойной клик — играть  ·  ПКМ — все действия  ·  "
-                        "перетаскивание — порядок"),
+                 text=t("Двойной клик или Enter — играть  ·  ПКМ — все "
+                        "действия  ·  перетаскивание — порядок"),
                  bg=BG, fg=MUTED, font=font(9)).pack(side="left")
         _hyperlink(footer, TELEGRAM_HANDLE, TELEGRAM_URL, bg=BG
                    ).pack(side="right", padx=(12, 0))
@@ -3747,8 +3873,7 @@ class App:
 
     def _update_actions(self):
         has = self.selected_entry()[0] is not None
-        for b in (getattr(self, "_btn_play", None),
-                  getattr(self, "_btn_edit", None),
+        for b in (getattr(self, "_btn_edit", None),
                   getattr(self, "_btn_delete", None)):
             if b is not None:
                 b.set_enabled(has)
@@ -4010,6 +4135,36 @@ class App:
         w.pack(fill="x", padx=22, ipady=5)
         return w
 
+    def _graphics_field(self, dlg, current, for_character=False):
+        """Preset picker plus a button to the builder. Returns (var, getter)."""
+        tk.Label(dlg, text=t("Графика при запуске"), bg=BG, fg=MUTED,
+                 font=font(9), anchor="w").pack(fill="x", padx=22, pady=(10, 2))
+        row = tk.Frame(dlg, bg=BG)
+        row.pack(fill="x", padx=22)
+        opts = {"list": graphics_options(self.cfg, for_character)}
+        var = tk.StringVar()
+        box = ttk.Combobox(row, textvariable=var, state="readonly",
+                           font=font(10))
+        box.pack(side="left", fill="x", expand=True, ipady=3)
+
+        def refresh(select=None):
+            opts["list"] = graphics_options(self.cfg, for_character)
+            box.configure(values=[lbl for _k, lbl in opts["list"]])
+            want = select if select is not None else current
+            var.set(dict(opts["list"]).get(want, opts["list"][0][1]))
+
+        def getter():
+            return next((k for k, lbl in opts["list"] if lbl == var.get()), "")
+
+        def open_builder():
+            chosen = getter()
+            self.graphics_constructor(dlg, on_close=lambda: refresh(chosen))
+
+        tk.Button(row, text=t("Настроить…"), bg=BTN_BG, fg=TEXT, relief="flat",
+                  padx=10, command=open_builder).pack(side="left", padx=(8, 0))
+        refresh()
+        return var, getter
+
     def account_dialog(self, idx):
         editing = idx is not None
         acc = self.cfg["characters"][idx] if editing else {}
@@ -4046,12 +4201,7 @@ class App:
         self._field(dlg, t("Realmlist"), lambda p: ttk.Combobox(
             p, textvariable=rl_var, values=self.cfg.get("realmlists", []),
             font=font(10)))
-        gfx_opts = [(k, t(lbl)) for k, lbl in GRAPHICS_LABELS]
-        gfx_var = tk.StringVar(value=dict(gfx_opts).get(
-            acc.get("graphics", ""), gfx_opts[0][1]))
-        self._field(dlg, t("Графика при запуске"), lambda p: ttk.Combobox(
-            p, textvariable=gfx_var, values=[lbl for _k, lbl in gfx_opts],
-            state="readonly", font=font(10)))
+        gfx_var, gfx_get = self._graphics_field(dlg, acc.get("graphics", ""))
 
         tk.Label(dlg, text=t("Секрет 2FA (Google / 2FAS Auth / Yandex "
                              "Authenticator)"),
@@ -4099,8 +4249,7 @@ class App:
                       "totp_secret": normalize_totp_secret(totp_var.get()),
                       "realm": realm_var.get().strip(),
                       "realmlist": rl_var.get().strip(),
-                      "graphics": next((k for k, lbl in gfx_opts
-                                        if lbl == gfx_var.get()), "")}
+                      "graphics": gfx_get()}
             if editing:
                 old = acc.get("account", "")
                 for e in self.cfg["characters"]:
@@ -4169,14 +4318,8 @@ class App:
         self._field(dlg, t("Реалм"), lambda p: ttk.Combobox(
             p, textvariable=realm_var, values=self.cfg.get("realms", []),
             font=font(10)))
-        cgfx_opts = ([("", t("Как у аккаунта")),
-                      ("none", t("Как в настройках игры"))]
-                     + [(k, t(lbl)) for k, lbl in GRAPHICS_LABELS if k])
-        cgfx_var = tk.StringVar(value=dict(cgfx_opts).get(
-            ch.get("graphics", ""), cgfx_opts[0][1]))
-        self._field(dlg, t("Графика при запуске"), lambda p: ttk.Combobox(
-            p, textvariable=cgfx_var, values=[lbl for _k, lbl in cgfx_opts],
-            state="readonly", font=font(10)))
+        _cgfx_var, cgfx_get = self._graphics_field(
+            dlg, ch.get("graphics", ""), for_character=True)
         tk.Label(dlg, text=t("Пароль и 2FA берутся из аккаунта."),
                  bg=BG, fg=MUTED, font=font(8), anchor="w"
                  ).pack(fill="x", padx=22, pady=(6, 0))
@@ -4203,8 +4346,7 @@ class App:
             cls = "" if cls_disp == t(NO_CLASS) else class_canon(cls_disp)
             fields = {"name": name, "account": login, "class": cls,
                       "realm": realm,
-                      "graphics": next((k for k, lbl in cgfx_opts
-                                        if lbl == cgfx_var.get()), "")}
+                      "graphics": cgfx_get()}
             if editing:
                 moved = acc_key(ch.get("account")) != acc_key(login)
                 ch.update(fields)
@@ -4596,12 +4738,70 @@ class App:
 
     # ── dialog auto-fit helpers ─────────────────────────────────────────────
 
+    def _center_window(self, win, width, height):
+        """Put a dialog in the middle of the main window (or of the screen
+        while the main window is hidden in the tray). Without an explicit
+        position Windows drops new windows into the top-left corner."""
+        win.update_idletasks()
+        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+        root = self.root
+        try:
+            over_root = (root.winfo_viewable()
+                         and root.state() not in ("withdrawn", "iconic"))
+        except tk.TclError:
+            over_root = False
+        if over_root:
+            cx = root.winfo_rootx() + root.winfo_width() // 2
+            cy = root.winfo_rooty() + root.winfo_height() // 2
+            vx, vy, vw, vh = virtual_screen(win)
+        else:
+            cx, cy = sw // 2, sh // 2
+            vx, vy, vw, vh = 0, 0, sw, sh
+        x = max(vx, min(cx - width // 2, vx + vw - width))
+        y = max(vy, min(cy - height // 2, vy + vh - height - 40))
+        win.geometry("%dx%d+%d+%d" % (width, height, x, y))
+        win._placed = True
+
+    def _on_toplevel_map(self, e):
+        """Safety net for any dialog that doesn't size itself through
+        _fit_dialog / _fit_scroll: if it lands in the corner, centre it."""
+        w = e.widget
+        if not isinstance(w, tk.Toplevel) or getattr(w, "_placed", False):
+            return
+        try:
+            if w.overrideredirect():
+                return                         # the hover card places itself
+        except tk.TclError:
+            return
+        w._placed = True
+        if w.winfo_rootx() < 60 and w.winfo_rooty() < 90:
+            self._center_window(w, max(w.winfo_width(), w.winfo_reqwidth()),
+                                max(w.winfo_height(), w.winfo_reqheight()))
+
+    def _restore_geometry(self):
+        """Saved size and position, unless that position is off every monitor
+        (a screen was unplugged) — then centre on the main screen."""
+        geo = self.cfg.get("win_geometry") or ""
+        m = re.match(r"^(\d+)x(\d+)([+-]-?\d+)([+-]-?\d+)$", geo)
+        w, h = WIN_W, WIN_H
+        if m:
+            w, h = int(m.group(1)), int(m.group(2))
+            x, y = int(m.group(3)), int(m.group(4))
+            vx, vy, vw, vh = virtual_screen(self.root)
+            if (vx - 50 <= x <= vx + vw - 200 and vy - 10 <= y <= vy + vh - 120):
+                self.root.geometry(geo)
+                return
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        w, h = min(w, sw - 40), min(h, sh - 80)
+        self.root.geometry("%dx%d+%d+%d" % (w, h, (sw - w) // 2,
+                                            max(0, (sh - h) // 2 - 20)))
+
     def _fit_dialog(self, dlg, width):
         """Size a (non-scrolling) dialog to its content height, capped."""
         dlg.update_idletasks()
         sh = dlg.winfo_screenheight()
         h = min(int(sh * 0.92), max(200, dlg.winfo_reqheight()))
-        dlg.geometry(f"{int(width)}x{h}")
+        self._center_window(dlg, int(width), h)
         style_window_chrome(dlg)
 
     def _fit_scroll(self, dlg, body, width, extra=80):
@@ -4609,7 +4809,7 @@ class App:
         dlg.update_idletasks()
         sh = dlg.winfo_screenheight()
         h = min(int(sh * 0.92), max(260, body.winfo_reqheight() + extra))
-        dlg.geometry(f"{int(width)}x{h}")
+        self._center_window(dlg, int(width), h)
         style_window_chrome(dlg)
 
     # ── scrollable dialog body helper ───────────────────────────────────────
@@ -4865,6 +5065,7 @@ class App:
                   ).pack(side="left", padx=(8, 0))
         tk.Button(row, text=t("Закрыть"), bg=BTN_BG, fg=TEXT, relief="flat",
                   padx=14, pady=6, command=dlg.destroy).pack(side="right")
+        self._fit_dialog(dlg, 760)
 
     def wtf_transfer_dialog(self, parent):
         """Copy one character's UI / keybinds / addon settings onto others."""
@@ -5002,6 +5203,227 @@ class App:
 
         apply_btn.configure(command=apply)
         self._fit_dialog(dlg, 480)
+
+    def graphics_constructor(self, parent, on_close=None):
+        """Build your own graphics presets: pick which client settings the
+        preset changes and what it sets them to. Built-in presets are shown
+        read-only — "Копия" makes an editable one out of any of them."""
+        dlg = tk.Toplevel(parent)
+        dlg.title(t("Конструктор графики"))
+        dlg.configure(bg=BG)
+        dlg.transient(parent)
+        tk.Label(dlg, text=t("Конструктор графики"), bg=BG, fg=TEXT,
+                 font=font(14, "bold")).pack(padx=20, pady=(16, 2), anchor="w")
+        tk.Label(dlg, text=t("Пресет меняет только отмеченные настройки, "
+                             "остальные останутся как в игре."),
+                 bg=BG, fg=MUTED, font=font(9), anchor="w"
+                 ).pack(fill="x", padx=20)
+
+        wrap = tk.Frame(dlg, bg=BG)
+        wrap.pack(fill="both", expand=True, padx=20, pady=(10, 0))
+
+        left = tk.Frame(wrap, bg=BG)
+        left.pack(side="left", fill="y", padx=(0, 14))
+        listbox = tk.Listbox(left, width=30, height=16, bg=ENTRY_BG, fg=TEXT,
+                             relief="flat", highlightthickness=1,
+                             highlightbackground=BORDER, font=font(10),
+                             selectbackground=SEL_BG, selectforeground=SEL_FG,
+                             exportselection=False, activestyle="none")
+        listbox.pack(fill="y", expand=True)
+        lbtns = tk.Frame(left, bg=BG)
+        lbtns.pack(fill="x", pady=(8, 0))
+
+        right = tk.Frame(wrap, bg=BG)
+        right.pack(side="left", fill="both", expand=True)
+        name_row = tk.Frame(right, bg=BG)
+        name_row.pack(fill="x")
+        tk.Label(name_row, text=t("Название"), bg=BG, fg=MUTED, font=font(9)
+                 ).pack(side="left")
+        name_var = tk.StringVar()
+        name_entry = _make_entry(name_row, name_var)
+        name_entry.pack(side="left", fill="x", expand=True, padx=(8, 0), ipady=3)
+
+        rows_area = tk.Frame(right, bg=BG)
+        rows_area.pack(fill="both", expand=True, pady=(10, 0))
+
+        keys = []                      # listbox index -> preset key
+        state = {"key": None, "rows": {}, "loading": False}
+
+        def selected_key():
+            sel = listbox.curselection()
+            return keys[sel[0]] if sel else None
+
+        def editable(key):
+            return key is not None and key not in GRAPHICS_PRESETS
+
+        def store():
+            """Write the editor back into the preset (user presets only)."""
+            key = state["key"]
+            if state["loading"] or not editable(key):
+                return
+            presets = self.cfg.setdefault("graphics_presets", {})
+            entry = presets.setdefault(key, {})
+            entry["name"] = name_var.get().strip() or key
+            cvars = {}
+            for cvar, (use_var, val_var) in state["rows"].items():
+                if use_var.get():
+                    cvars[cvar] = gfx_value_str(val_var.get())
+            entry["cvars"] = cvars
+
+        def load(key):
+            state["loading"] = True
+            state["key"] = key
+            values = preset_cvars(self.cfg, key) if key else {}
+            name_var.set(preset_label(self.cfg, key) if key else "")
+            can_edit = editable(key)
+            name_entry.configure(state="normal" if can_edit else "disabled")
+            for cvar, (use_var, val_var) in state["rows"].items():
+                present = cvar in values
+                use_var.set(present)
+                default = next(d for c, _l, _k, _lo, _hi, _st, d
+                               in GRAPHICS_SETTINGS if c == cvar)
+                try:
+                    val_var.set(float(values.get(cvar, default)))
+                except (TypeError, ValueError):
+                    val_var.set(float(default))
+            for widgets in state.get("widgets", []):
+                for w in widgets:
+                    try:
+                        w.configure(state="normal" if can_edit else "disabled")
+                    except tk.TclError:
+                        pass
+            state["loading"] = False
+            refresh_values()
+
+        def refresh_values():
+            for cvar, label in state.get("value_labels", {}).items():
+                _use, val_var = state["rows"][cvar]
+                kind = next(k for c, _l, k, _lo, _hi, _st, _d
+                            in GRAPHICS_SETTINGS if c == cvar)
+                if kind == "toggle":
+                    label.configure(text=t("вкл") if val_var.get() >= 0.5
+                                    else t("выкл"))
+                else:
+                    label.configure(text=gfx_value_str(val_var.get()))
+
+        # one row per setting
+        state["widgets"], state["value_labels"] = [], {}
+        for cvar, label, kind, lo, hi, step, default in GRAPHICS_SETTINGS:
+            row = tk.Frame(rows_area, bg=BG)
+            row.pack(fill="x", pady=1)
+            use_var = tk.BooleanVar(value=False)
+            val_var = tk.DoubleVar(value=float(default))
+            state["rows"][cvar] = (use_var, val_var)
+
+            def changed(*_a):
+                store()
+                refresh_values()
+
+            use_var.trace_add("write", changed)
+            val_var.trace_add("write", changed)
+            cb = tk.Checkbutton(row, variable=use_var, bg=BG, fg=TEXT,
+                                activebackground=BG, selectcolor=ENTRY_BG,
+                                highlightthickness=0, bd=0)
+            cb.pack(side="left")
+            tk.Label(row, text=t(label), bg=BG, fg=TEXT, font=font(9),
+                     width=28, anchor="w").pack(side="left")
+            value_lbl = tk.Label(row, text="", bg=BG, fg=ACCENT, font=font(9),
+                                 width=6, anchor="e")
+            value_lbl.pack(side="right")
+            state["value_labels"][cvar] = value_lbl
+            if kind == "toggle":
+                ctl = tk.Checkbutton(row, variable=val_var, onvalue=1.0,
+                                     offvalue=0.0, bg=BG, activebackground=BG,
+                                     selectcolor=ENTRY_BG, highlightthickness=0,
+                                     bd=0)
+                ctl.pack(side="right", padx=(0, 10))
+            else:
+                ctl = tk.Scale(row, from_=lo, to=hi, resolution=step,
+                               orient="horizontal", variable=val_var,
+                               showvalue=0, bg=BTN_HOVER, fg=TEXT,
+                               troughcolor=ENTRY_BG, activebackground=ACCENT,
+                               highlightthickness=0, bd=0, width=10,
+                               sliderlength=16, sliderrelief="flat", length=200)
+                ctl.pack(side="right", padx=(0, 10))
+            state["widgets"].append((cb, ctl))
+
+        def fill_list(select_key=None):
+            store()
+            listbox.delete(0, "end")
+            del keys[:]
+            for key, lbl in graphics_options(self.cfg):
+                if not key:
+                    continue
+                keys.append(key)
+                listbox.insert("end", lbl + ("" if editable(key)
+                                             else "  " + t("(встроенный)")))
+            if not keys:
+                load(None)
+                return
+            idx = keys.index(select_key) if select_key in keys else 0
+            listbox.selection_clear(0, "end")
+            listbox.selection_set(idx)
+            load(keys[idx])
+
+        def on_select(_e=None):
+            store()
+            key = selected_key()
+            if key and key != state["key"]:
+                load(key)
+
+        listbox.bind("<<ListboxSelect>>", on_select)
+
+        def add_preset(copy_from=None):
+            store()
+            key = new_preset_key(self.cfg)
+            base = preset_cvars(self.cfg, copy_from) if copy_from else {}
+            name = (t("{name} — копия").format(
+                name=preset_label(self.cfg, copy_from)) if copy_from
+                else t("Мой пресет"))
+            self.cfg.setdefault("graphics_presets", {})[key] = {
+                "name": name, "cvars": base}
+            fill_list(key)
+            name_entry.focus_set()
+
+        def delete_preset():
+            key = selected_key()
+            if not editable(key):
+                messagebox.showinfo(
+                    APP_TITLE, t("Встроенный пресет нельзя удалить — сделай "
+                                 "копию."), parent=dlg)
+                return
+            if not messagebox.askyesno(
+                    APP_TITLE, t("Удалить пресет «{name}»?").format(
+                        name=preset_label(self.cfg, key)), parent=dlg):
+                return
+            state["key"] = None
+            drop_preset(self.cfg, key)
+            fill_list()
+
+        tk.Button(lbtns, text=t("Новый"), bg=BTN_BG, fg=TEXT, relief="flat",
+                  padx=8, pady=3, command=lambda: add_preset()
+                  ).pack(side="left")
+        tk.Button(lbtns, text=t("Копия"), bg=BTN_BG, fg=TEXT, relief="flat",
+                  padx=8, pady=3,
+                  command=lambda: add_preset(selected_key())
+                  ).pack(side="left", padx=4)
+        tk.Button(lbtns, text=t("Удалить"), bg=BTN_BG, fg=TEXT, relief="flat",
+                  padx=8, pady=3, command=delete_preset).pack(side="left")
+
+        def close():
+            store()
+            save_cfg(self.cfg)
+            dlg.destroy()
+            if on_close:
+                on_close()
+
+        FlatButton(dlg, t("Готово"), kind="primary", command=close
+                   ).pack(fill="x", padx=20, pady=(12, 16))
+        dlg.protocol("WM_DELETE_WINDOW", close)
+        dlg.bind("<Escape>", lambda _e: close())
+        fill_list()
+        self._fit_dialog(dlg, 700)
+        dlg.grab_set()
 
     def backup_settings(self, parent):
         dlg = tk.Toplevel(parent)
@@ -5425,6 +5847,11 @@ class App:
             activeforeground=TEXT, selectcolor=ENTRY_BG,
             font=("Segoe UI", 9), anchor="w"
         ).pack(fill="x", padx=18, pady=(2, 0))
+
+        tk.Button(body, text=t("Конструктор графики…"), bg=BTN_BG, fg=TEXT,
+                  relief="flat", padx=10, pady=2,
+                  command=lambda: self.graphics_constructor(dlg)
+                  ).pack(anchor="w", padx=22, pady=(6, 0))
 
         # ── External loader (checkbox + Configure) ───────────────────────────
         loader_var = tk.BooleanVar(value=bool(self.cfg.get("use_loader", False)))

@@ -115,10 +115,10 @@ check("summary names the best geared character", "Тестомаг" in app.summa
 # ── selection drives the toolbar ──────────────────────────────────────────
 tree.selection_set(())
 root.update()
-check("no selection -> Play disabled", not app._btn_play.enabled)
+check("no selection -> Edit disabled", not app._btn_edit.enabled)
 tree.selection_set(tree.get_children(tops[0])[0])
 root.update()
-check("selection -> Play enabled", app._btn_play.enabled)
+check("selection -> Edit enabled", app._btn_edit.enabled)
 
 # ── search ────────────────────────────────────────────────────────────────
 app.search_var.set("тестопал")
@@ -314,6 +314,79 @@ app.settings()
 root.update()
 check("settings dialog opens", any(isinstance(w, tk.Toplevel)
                                    for w in root.winfo_children()))
+
+# ── graphics preset builder ───────────────────────────────────────────────
+app.graphics_constructor(root)
+root.update()
+gfx = [w for w in root.winfo_children()
+       if isinstance(w, tk.Toplevel) and w.title() == L.t("Конструктор графики")][-1]
+boxes = []
+
+
+def walk(w):
+    for c in w.winfo_children():
+        if isinstance(c, tk.Listbox):
+            boxes.append(c)
+        walk(c)
+
+
+walk(gfx)
+check("builder lists the built-in presets", boxes and boxes[0].size() == 2)
+def find_tk_buttons(w, out):
+    for c in w.winfo_children():
+        if isinstance(c, tk.Button):
+            out[c.cget("text")] = c
+        find_tk_buttons(c, out)
+    return out
+
+
+tkb = find_tk_buttons(gfx, {})
+tkb[L.t("Копия")].invoke()               # copy the selected built-in
+root.update()
+presets = L.user_presets(app.cfg)
+check("copy creates an editable preset", len(presets) == 1)
+copied = list(presets)[0]
+check("the copy carries the built-in's settings",
+      presets[copied]["cvars"] == L.GRAPHICS_PRESETS["light"])
+check("the list now shows three presets", boxes[0].size() == 3)
+
+tkb[L.t("Новый")].invoke()
+root.update()
+check("a second preset gets its own key", len(L.user_presets(app.cfg)) == 2)
+mb.askyesno = lambda *a, **k: True
+tkb[L.t("Удалить")].invoke()
+root.update()
+check("delete removes the selected preset", len(L.user_presets(app.cfg)) == 1)
+for b in find_buttons(gfx):
+    b.command()                           # "Готово" saves and closes
+root.update()
+check("builder closes and saves",
+      not any(isinstance(w, tk.Toplevel)
+              and w.title() == L.t("Конструктор графики")
+              for w in root.winfo_children()))
+check("the preset survives a reload",
+      L.user_presets(L.load_cfg()) == L.user_presets(app.cfg))
+
+# the account dialog offers it
+app.account_dialog(E().index(L.account_entry_for(app.cfg, "acc")))
+root.update()
+adlg = last_dialog()
+combos = []
+
+
+def walk_combo(w):
+    for c in w.winfo_children():
+        if isinstance(c, L.ttk.Combobox):
+            combos.append(c)
+        walk_combo(c)
+
+
+walk_combo(adlg)
+values = [v for cb in combos for v in cb.cget("values")]
+check("the account picker lists the custom preset",
+      any(L.preset_label(app.cfg, list(L.user_presets(app.cfg))[0]) == v
+          for v in values))
+adlg.destroy()
 
 # ── theme switch rebuilds cleanly ─────────────────────────────────────────
 for w in root.winfo_children():

@@ -29,8 +29,8 @@ python -m nuitka ^
     --include-package=pystray ^
     --include-package=PIL ^
     --product-name="Менеджер персонажей WOW" ^
-    --product-version=1.6.0.0 ^
-    --file-version=1.6.0.0 ^
+    --product-version=1.6.1.0 ^
+    --file-version=1.6.1.0 ^
     --company-name=Zaifat ^
     --output-filename=Manager_WOW.exe ^
     --output-dir=dist ^

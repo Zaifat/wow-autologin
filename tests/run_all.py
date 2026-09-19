@@ -27,6 +27,7 @@ TESTS = [
     "test_lua_globals.py",
     "test_lua_generated.py",
     "test_addon_logic.py",
+    "test_native.py",
 ]
 
 

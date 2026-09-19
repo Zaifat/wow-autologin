@@ -65,6 +65,46 @@ check("every preset only uses CVars that exist in 3.3.5a",
 check("every preset has a label",
       {k for k, _ in L.GRAPHICS_LABELS if k} == set(L.GRAPHICS_PRESETS))
 
+# user-built presets
+ucfg = {"characters": [{"name": "", "account": "a", "graphics": "my1"},
+                       {"name": "Ch", "account": "a", "graphics": "my1"}],
+        "graphics_presets": {"my1": {"name": "Ночной",
+                                     "cvars": {"farclip": "300",
+                                               "maxFPS": "45",
+                                               "bogusCvar": "1"}}}}
+check("a user preset resolves", L.effective_graphics(ucfg, ucfg["characters"][1])
+      == "my1")
+check("only known CVars are kept",
+      L.preset_cvars(ucfg, "my1") == {"farclip": "300", "maxFPS": "45"})
+check("built-in presets still resolve",
+      L.preset_cvars(ucfg, "minimal") == L.GRAPHICS_PRESETS["minimal"])
+check("an unknown preset falls back to none",
+      L.effective_graphics({"characters": [{"name": "X", "account": "a",
+                                            "graphics": "ghost"}]},
+                           {"name": "X", "account": "a", "graphics": "ghost"})
+      == "")
+opts = dict(L.graphics_options(ucfg))
+check("the picker lists built-ins and user presets",
+      "my1" in opts and "minimal" in opts and opts["my1"] == "Ночной")
+check("the character picker offers 'same as account'",
+      L.graphics_options(ucfg, for_character=True)[0][0] == ""
+      and L.graphics_options(ucfg, for_character=True)[1][0] == "none")
+check("a new key never collides", L.new_preset_key(ucfg) == "my2")
+L.drop_preset(ucfg, "my1")
+check("deleting a preset clears it everywhere",
+      not L.user_presets(ucfg)
+      and all(not e.get("graphics") for e in ucfg["characters"]))
+check("values are stored the way the client writes them",
+      (L.gfx_value_str(1.0), L.gfx_value_str(0.75), L.gfx_value_str(30))
+      == ("1", "0.75", "30"))
+check("every builder setting is a real 3.3.5a CVar",
+      all(c in {"farclip", "groundEffectDensity", "groundEffectDist",
+                "environmentDetail", "particleDensity", "weatherDensity",
+                "extShadowQuality", "spellEffectLevel", "detailDoodadAlpha",
+                "projectedTextures", "maxFPS", "maxFPSBk",
+                "Sound_EnableAllSound", "Sound_EnableMusic"}
+          for c, _l, _k, _lo, _hi, _st, _d in L.GRAPHICS_SETTINGS))
+
 # Config.wtf snapshot / restore
 wow = os.path.join(tmp, "game")
 os.makedirs(os.path.join(wow, "WTF"))
@@ -149,8 +189,16 @@ check("addon flags are passed through", any(
     for c in popen_calls))
 
 seen_json.clear()
+launch_cfg["graphics_presets"] = {"my1": {"name": "Ночной",
+                                          "cvars": {"farclip": "300"}}}
+launch_cfg["characters"][0]["graphics"] = "my1"
+L.launch_wow(launch_cfg, launch_cfg["characters"][1])
+check("a user preset reaches the DLL", seen_json.get("cvar_farclip") == "300")
+
+seen_json.clear()
 launch_cfg["anti_afk"] = False
 launch_cfg["characters"][0]["graphics"] = ""
+launch_cfg["graphics_presets"] = {}
 L.launch_wow(launch_cfg, launch_cfg["characters"][1])
 check("no anti-AFK key when it is off", "antiafk" not in seen_json)
 check("no cvar_ keys without a preset",
