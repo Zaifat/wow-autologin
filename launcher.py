@@ -16,13 +16,14 @@ import sys
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 import re
 import urllib.request
 import webbrowser
 import zipfile
 from tkinter import filedialog, messagebox, ttk
 
-__version__ = "1.5.1"
+__version__ = "1.6.0"
 
 
 # Bail out immediately if a debugger is attached. This is a soft anti-RE
@@ -244,8 +245,6 @@ _EN = {
     "Не удалось восстановить:\n{e}": "Restore failed:\n{e}",
     "Восстановить": "Restore",
     # shortcuts
-    "Ярлык на рабочем столе для записи ([П] персонаж / [А] аккаунт)":
-        "Desktop shortcut ([П] character / [А] account)",
     "Запись:": "Entry:",
     "Сделать ярлык": "Create shortcut",
     "Сначала добавь хотя бы одну запись.": "Add at least one entry first.",
@@ -284,6 +283,45 @@ _EN = {
     "Пароли заблокированы — мастер-пароль не введён.":
         "Passwords are locked — no master password was entered.",
     "Ввести пароль": "Enter password",
+    "Менеджер персонажей WOW 3.3.5a (by Zaifat)":
+        "WoW 3.3.5a Character Manager (by Zaifat)",
+    # account -> characters tree
+    "Играть": "Play",
+    "Поиск персонажа или аккаунта": "Search a character or account",
+    "Аккаунт / персонаж": "Account / character",
+    "Аккаунтов": "Accounts",
+    "Персонажей": "Characters",
+    "Без аккаунта": "No account",
+    "ждёт первого входа": "waiting for first login",
+    "Добавь первый аккаунт": "Add your first account",
+    "Логин и пароль — персонажи подтянутся сами при первом входе в игру.":
+        "Login and password — characters are picked up on your first login.",
+    "Добавить аккаунт": "Add account",
+    "Двойной клик — играть  ·  ПКМ — все действия  ·  перетаскивание — "
+    "порядок":
+        "Double-click — play  ·  Right-click — all actions  ·  Drag — reorder",
+    "Войти в аккаунт": "Log in to account",
+    "Добавить персонажа": "Add character",
+    "Изменить аккаунт": "Edit account",
+    "Ярлык на рабочий стол": "Desktop shortcut",
+    "Удалить аккаунт «{name}» и его персонажей ({n})?":
+        "Delete account «{name}» and its characters ({n})?",
+    "Показать пароль": "Show password",
+    "Персонажей вводить не нужно: при первом входе в аккаунт они добавятся "
+    "сами.":
+        "No need to enter characters: they are added on your first login.",
+    "Введи логин аккаунта.": "Enter the account login.",
+    "Аккаунт «{name}» уже есть.": "Account «{name}» already exists.",
+    "Аккаунт «{name}» добавлен. Войди в него — персонажи подтянутся сами.":
+        "Account «{name}» added. Log in once and its characters appear.",
+    "Войти": "Log in",
+    "Ник персонажа": "Character name",
+    "Пароль и 2FA берутся из аккаунта.":
+        "Password and 2FA come from the account.",
+    "Введи ник персонажа.": "Enter the character name.",
+    "«{name}» уже есть на этом аккаунте.":
+        "«{name}» is already on this account.",
+    "Добавлены персонажи ({n}): {names}": "Characters added ({n}): {names}",
     "Уже запущена старая версия менеджера (значок в трее).\n"
     "Закрой её через меню трея и запусти программу снова.":
         "An older version of the manager is already running (tray icon).\n"
@@ -727,52 +765,226 @@ _PATCHES = [
 # ── theme ─────────────────────────────────────────────────────────────────────
 
 THEMES = {
-    "light": dict(BG="#F4F6FA", PANEL="#FFFFFF", BORDER="#D6DCE8",
-                  TEXT="#182033", MUTED="#697386", HEADER="#182033",
-                  ACCENT="#D9B95E", LINK="#1F6FB2",
-                  ENTRY_BG="#FFFFFF", BTN_BG="#E2E6EF",
-                  # Selection = a darkening overlay (not a colour fill)
-                  SEL_BG="#33405A", SEL_FG="#FFFFFF",
-                  # Primary buttons (Добавить, Сохранить, Запустить)
-                  PRIMARY_BG="#D9B95E", PRIMARY_FG="#171717"),
-    "dark":  dict(BG="#1A1D2A", PANEL="#252A3A", BORDER="#3A3F50",
-                  TEXT="#E8EBF2", MUTED="#8E96AA", HEADER="#0F1119",
-                  ACCENT="#D9B95E", LINK="#7DB6E8",
-                  ENTRY_BG="#1F2330", BTN_BG="#3A3F50",
-                  SEL_BG="#0E1118", SEL_FG="#FFFFFF",
-                  PRIMARY_BG="#D9B95E", PRIMARY_FG="#171717"),
-    # WotLK-styled gold/parchment theme
-    "wow":   dict(BG="#15110A", PANEL="#241D12", BORDER="#5C4A2A",
-                  TEXT="#EAD9B0", MUTED="#A8946A", HEADER="#0C0905",
+    # Neutral graphite with a WoW-gold accent — the default look.
+    "dark":  dict(BG="#0F1115", PANEL="#16191F", BORDER="#262A33",
+                  TEXT="#E7E9EE", MUTED="#8A92A3", HEADER="#16191F",
+                  ACCENT="#E3B341", LINK="#7AB8FF",
+                  ENTRY_BG="#1C2028", BTN_BG="#222733", BTN_HOVER="#2D3342",
+                  SEL_BG="#2A3552", SEL_FG="#FFFFFF",
+                  PRIMARY_BG="#E3B341", PRIMARY_FG="#17130A",
+                  PRIMARY_HOVER="#F0C45A", ACC_ROW="#1B1F27"),
+    "light": dict(BG="#F5F6F8", PANEL="#FFFFFF", BORDER="#E3E6EC",
+                  TEXT="#1B1F27", MUTED="#6B7280", HEADER="#FFFFFF",
+                  ACCENT="#B7862A", LINK="#1F6FEB",
+                  ENTRY_BG="#FFFFFF", BTN_BG="#ECEEF2", BTN_HOVER="#E0E3E9",
+                  SEL_BG="#DDE6FB", SEL_FG="#0B1B3F",
+                  PRIMARY_BG="#1B1F27", PRIMARY_FG="#FFFFFF",
+                  PRIMARY_HOVER="#343A46", ACC_ROW="#F3F5F8"),
+    # WotLK gold / parchment
+    "wow":   dict(BG="#15110A", PANEL="#1F190F", BORDER="#4A3B22",
+                  TEXT="#EAD9B0", MUTED="#A8946A", HEADER="#1F190F",
                   ACCENT="#E2C158", LINK="#D9B95E",
-                  ENTRY_BG="#1E180E", BTN_BG="#4A3B22",
-                  SEL_BG="#6B5526", SEL_FG="#FFF3D0",
-                  PRIMARY_BG="#E2C158", PRIMARY_FG="#1A1206"),
+                  ENTRY_BG="#1A150C", BTN_BG="#3A2E1A", BTN_HOVER="#4A3B22",
+                  SEL_BG="#5C4A22", SEL_FG="#FFF3D0",
+                  PRIMARY_BG="#E2C158", PRIMARY_FG="#1A1206",
+                  PRIMARY_HOVER="#F0D172", ACC_ROW="#241D12"),
 }
+DARK_THEMES = ("dark", "wow")
 
-CURRENT_THEME = "light"
+CURRENT_THEME = "dark"
 
 # Module-level colour vars get rebound by apply_theme()
 BG = PANEL = BORDER = TEXT = MUTED = HEADER = ACCENT = LINK = "#000"
-ENTRY_BG = BTN_BG = SEL_BG = SEL_FG = "#000"
-PRIMARY_BG = PRIMARY_FG = "#000"
+ENTRY_BG = BTN_BG = BTN_HOVER = SEL_BG = SEL_FG = "#000"
+PRIMARY_BG = PRIMARY_FG = PRIMARY_HOVER = ACC_ROW = "#000"
+
 
 def apply_theme(name):
     global BG, PANEL, BORDER, TEXT, MUTED, HEADER, ACCENT, LINK
-    global ENTRY_BG, BTN_BG, SEL_BG, SEL_FG
-    global PRIMARY_BG, PRIMARY_FG, CURRENT_THEME
-    t = THEMES.get(name, THEMES["light"])
-    CURRENT_THEME                    = name if name in THEMES else "light"
-    BG, PANEL, BORDER, TEXT, MUTED   = t["BG"], t["PANEL"], t["BORDER"], t["TEXT"], t["MUTED"]
-    HEADER, ACCENT, LINK             = t["HEADER"], t["ACCENT"], t["LINK"]
-    ENTRY_BG, BTN_BG                 = t["ENTRY_BG"], t["BTN_BG"]
-    SEL_BG, SEL_FG                   = t["SEL_BG"], t["SEL_FG"]
-    PRIMARY_BG, PRIMARY_FG           = t["PRIMARY_BG"], t["PRIMARY_FG"]
+    global ENTRY_BG, BTN_BG, BTN_HOVER, SEL_BG, SEL_FG
+    global PRIMARY_BG, PRIMARY_FG, PRIMARY_HOVER, ACC_ROW, CURRENT_THEME
+    t = THEMES.get(name, THEMES["dark"])
+    CURRENT_THEME = name if name in THEMES else "dark"
+    BG, PANEL, BORDER = t["BG"], t["PANEL"], t["BORDER"]
+    TEXT, MUTED, HEADER = t["TEXT"], t["MUTED"], t["HEADER"]
+    ACCENT, LINK = t["ACCENT"], t["LINK"]
+    ENTRY_BG, BTN_BG, BTN_HOVER = t["ENTRY_BG"], t["BTN_BG"], t["BTN_HOVER"]
+    SEL_BG, SEL_FG = t["SEL_BG"], t["SEL_FG"]
+    PRIMARY_BG, PRIMARY_FG = t["PRIMARY_BG"], t["PRIMARY_FG"]
+    PRIMARY_HOVER, ACC_ROW = t["PRIMARY_HOVER"], t["ACC_ROW"]
 
-apply_theme("light")
 
-WIN_W = 880
-WIN_H = 560
+apply_theme("dark")
+
+WIN_W = 1040
+WIN_H = 640
+
+
+# ── modern look: fonts, icons, window chrome ────────────────────────────────
+# Windows 11 ships "Segoe UI Variable" and the "Segoe Fluent Icons" glyph
+# font; Windows 10 has "Segoe UI" and "Segoe MDL2 Assets" with the same code
+# points. Whatever is installed is picked once at startup.
+
+UI_FONT = "Segoe UI"
+ICON_FONT = None
+ICONS = {"play": "\uE768", "add": "\uE710", "edit": "\uE70F",
+         "delete": "\uE74D", "settings": "\uE713", "search": "\uE721",
+         "person": "\uE77B", "people": "\uE716", "link": "\uE71B",
+         "more": "\uE712", "sync": "\uE895"}
+ICON_FALLBACK = {"play": "\u25B6", "add": "+", "edit": "\u270E",
+                 "delete": "\u2715", "settings": "\u2699", "search": "\u2315",
+                 "person": "\u25CF", "people": "\u25CF", "link": "\u2197",
+                 "more": "\u22EF", "sync": "\u21BB"}
+
+
+def init_fonts(root):
+    global UI_FONT, ICON_FONT
+    try:
+        fams = set(tkfont.families(root))
+    except Exception:
+        return
+    for f in ("Segoe UI Variable Text", "Segoe UI"):
+        if f in fams:
+            UI_FONT = f
+            break
+    for f in ("Segoe Fluent Icons", "Segoe MDL2 Assets"):
+        if f in fams:
+            ICON_FONT = f
+            break
+
+
+def font(size=10, weight="normal"):
+    return (UI_FONT, size, weight)
+
+
+def icon_glyph(name):
+    return ICONS.get(name, "") if ICON_FONT else ICON_FALLBACK.get(name, "")
+
+
+def _hwnd_of(win):
+    try:
+        win.update_idletasks()
+        return ctypes.windll.user32.GetParent(win.winfo_id())
+    except Exception:
+        return 0
+
+
+def style_window_chrome(win, rounded=False):
+    """Dark title bar to match a dark theme, and rounded corners for popups
+    (Windows 11). Silently does nothing where DWM doesn't support it."""
+    if sys.platform != "win32":
+        return
+    hwnd = _hwnd_of(win)
+    if not hwnd:
+        return
+    try:
+        dwm = ctypes.windll.dwmapi
+        dark = ctypes.c_int(1 if CURRENT_THEME in DARK_THEMES else 0)
+        # 20 = DWMWA_USE_IMMERSIVE_DARK_MODE; 19 on pre-20H1 builds
+        for attr in (20, 19):
+            if dwm.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(dark),
+                                         ctypes.sizeof(dark)) == 0:
+                break
+        if rounded:
+            pref = ctypes.c_int(2)    # DWMWA_WINDOW_CORNER_PREFERENCE = ROUND
+            dwm.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(pref),
+                                      ctypes.sizeof(pref))
+    except Exception:
+        pass
+
+
+def class_text_color(cls):
+    """A class colour that stays readable as text on the current background:
+    WoW's priest white and rogue yellow vanish on a light theme, so bright
+    colours are darkened there and dark ones lifted on dark themes."""
+    col = CLASS_COLORS.get(cls)
+    if not col:
+        return TEXT
+    r, g, b = int(col[1:3], 16), int(col[3:5], 16), int(col[5:7], 16)
+    luma = 0.299 * r + 0.587 * g + 0.114 * b
+    if CURRENT_THEME in DARK_THEMES:
+        if luma < 110:
+            k = 110 / max(luma, 1)
+            r, g, b = (min(255, int(v * k)) for v in (r, g, b))
+    elif luma > 150:
+        k = 0.55
+        r, g, b = (int(v * k) for v in (r, g, b))
+    return "#%02X%02X%02X" % (r, g, b)
+
+
+class FlatButton(tk.Frame):
+    """Flat button with an optional icon glyph and hover / disabled states —
+    tk.Button can't mix an icon font with a text font or restyle its hover."""
+
+    def __init__(self, parent, text="", icon=None, command=None,
+                 kind="secondary", size=10, padx=14, pady=7):
+        self.kind = kind
+        self._set_palette()
+        super().__init__(parent, bg=self._bg, cursor="hand2")
+        self.command = command
+        self.enabled = True
+        self._labels = []
+        inner = tk.Frame(self, bg=self._bg)
+        inner.pack(padx=padx, pady=pady)
+        self._inner = inner
+        if icon:
+            f = (ICON_FONT, size) if ICON_FONT else font(size)
+            lab = tk.Label(inner, text=icon_glyph(icon), font=f,
+                           bg=self._bg, fg=self._fg)
+            lab.pack(side="left")
+            self._labels.append(lab)
+        if text:
+            lab = tk.Label(inner, text=text, bg=self._bg, fg=self._fg,
+                           font=font(size, "bold" if kind == "primary"
+                                     else "normal"))
+            lab.pack(side="left", padx=(8 if icon else 0, 0))
+            self._labels.append(lab)
+        for w in [self, inner] + self._labels:
+            w.bind("<Enter>", self._on_enter)
+            w.bind("<Leave>", self._on_leave)
+            w.bind("<ButtonRelease-1>", self._on_click)
+
+    def _set_palette(self):
+        if self.kind == "primary":
+            self._bg, self._fg, self._hover = PRIMARY_BG, PRIMARY_FG, PRIMARY_HOVER
+        elif self.kind == "ghost":
+            self._bg, self._fg, self._hover = BG, TEXT, BTN_BG
+        else:
+            self._bg, self._fg, self._hover = BTN_BG, TEXT, BTN_HOVER
+
+    def _paint(self, bg, fg):
+        for w in (self, self._inner):
+            w.configure(bg=bg)
+        for lab in self._labels:
+            lab.configure(bg=bg, fg=fg)
+
+    def _inside(self, x, y):
+        w = self.winfo_containing(x, y)
+        return w is not None and (w is self or str(w).startswith(str(self) + "."))
+
+    def _on_enter(self, _e=None):
+        if self.enabled:
+            self._paint(self._hover, self._fg)
+
+    def _rest(self):
+        if self.enabled:
+            return self._bg, self._fg
+        return (BTN_BG if self.kind == "primary" else self._bg), MUTED
+
+    def _on_leave(self, _e=None):
+        # Leave also fires when moving between the button's own children.
+        if self._inside(*self.winfo_pointerxy()):
+            return
+        self._paint(*self._rest())
+
+    def _on_click(self, e):
+        if self.enabled and self.command and self._inside(e.x_root, e.y_root):
+            self.command()
+
+    def set_enabled(self, on):
+        self.enabled = bool(on)
+        self.configure(cursor="hand2" if self.enabled else "arrow")
+        self._paint(*self._rest())
 
 
 # ── paths ─────────────────────────────────────────────────────────────────────
@@ -878,7 +1090,10 @@ def _default_cfg():
         "realms":               list(REALMS_DEFAULT),
         "realmlists":           list(REALMLISTS_DEFAULT),
         "characters":           [],
-        "theme":                "light",   # "light" | "dark"
+        # "account|realm|name" of characters the user removed on purpose, so
+        # the automatic import from the game doesn't bring them back.
+        "hidden_chars":         [],
+        "theme":                "dark",    # "dark" | "light" | "wow"
         "lang":                 _detect_os_lang(),  # auto by OS on first run
         # Encrypt passwords / 2FA secrets at rest with Windows DPAPI (bound to
         # this PC + user). Turn off to store them as plaintext (portable).
@@ -895,7 +1110,8 @@ def _default_cfg():
         "hover_card":           True,    # info card on row hover (deploys addon)
         "overlay":              False,   # in-game minimap relog button
         # Columns: ordered keys + per-column label/width overrides + sort
-        "columns":              ["class", "gs", "account", "realm", "realmlist"],
+        "columns":              ["class", "level", "gs", "gold", "realm",
+                                 "status"],
         "column_labels":        {},      # key -> custom heading text
         "column_widths":        {},      # key -> px width
         "sort":                 {},      # {"col": key, "reverse": bool}
@@ -905,7 +1121,6 @@ def _default_cfg():
         "card_labels":          {},      # key -> custom label
         # Window state
         "win_geometry":         "",      # last "WxH+X+Y"
-        "sash_pos":             0,       # accounts-table divider position (px)
         # Optional external loader used for ALL characters (enable with
         # `use_loader`). If off, characters launch WoW.exe directly.
         "use_loader":           False,
@@ -973,6 +1188,7 @@ def load_cfg(decrypt=True):
         c.pop("loader_name", None)
     cfg["secret_mode"] = secret_mode(cfg)
     cfg.pop("encrypt_secrets", None)
+    normalize_roster(cfg)
     # Decrypt secrets — in-memory cfg normally holds plaintext. Master mode
     # defers this until the password has been entered.
     if decrypt:
@@ -1010,6 +1226,271 @@ def save_cfg(cfg):
         except OSError:
             pass
     os.replace(tmp, CONFIG_FILE)
+
+
+# ── roster model ──────────────────────────────────────────────────────────────
+# Stored flat — older configs, exports, desktop shortcuts and the tray all read
+# that shape — but it behaves as account → characters. The account entry (an
+# entry with no character name) owns the login, password, 2FA secret and
+# realmlist; each of its characters carries a copy that normalize_roster keeps
+# in sync, so the launch path can keep reading one flat entry.
+
+ACCOUNT_OWNED = ("password", "totp_secret", "realmlist")
+CLASS_BY_ID = {1: "Воин", 2: "Паладин", 3: "Охотник", 4: "Разбойник",
+               5: "Жрец", 6: "Рыцарь смерти", 7: "Шаман", 8: "Маг",
+               9: "Чернокнижник", 11: "Друид"}
+
+
+def acc_key(login):
+    return (login or "").strip().lower()
+
+
+def is_account_entry(e):
+    return not (e.get("name") or "").strip()
+
+
+def char_key(account, realm, name):
+    return "|".join((acc_key(account), (realm or "").strip().lower(),
+                     (name or "").strip().lower()))
+
+
+def _roster_snapshot(entries):
+    return json.dumps(entries, ensure_ascii=False, sort_keys=True)
+
+
+def normalize_roster(cfg):
+    """Bring the flat list in line with the account → characters model:
+
+    * exactly one account entry per login (duplicates are folded together);
+    * a character whose login has no account entry gets one;
+    * credentials live on the account entry and are copied down to its
+      characters (a legacy per-character password is lifted up first);
+    * entries are grouped: each account followed by its characters, in the
+      order the accounts first appear. Characters with no login go last.
+
+    Returns True if anything changed."""
+    before = _roster_snapshot(cfg.get("characters", []))
+    entries = [e for e in cfg.get("characters", [])
+               if isinstance(e, dict)
+               and ((e.get("name") or "").strip()
+                    or (e.get("account") or "").strip())]
+
+    accounts, order = {}, []
+    for e in entries:
+        k = acc_key(e.get("account"))
+        if not k:
+            continue
+        if k not in accounts:
+            order.append(k)
+            accounts[k] = None
+        if is_account_entry(e):
+            if accounts[k] is None:
+                accounts[k] = e
+            else:                        # duplicate account row: fold it in
+                keep = accounts[k]
+                for f in ACCOUNT_OWNED + ("realm",):
+                    if not keep.get(f) and e.get(f):
+                        keep[f] = e[f]
+
+    chars_of = {k: [] for k in order}
+    orphans = []
+    for e in entries:
+        if is_account_entry(e):
+            continue
+        k = acc_key(e.get("account"))
+        (chars_of[k] if k else orphans).append(e)
+
+    result = []
+    for k in order:
+        acc = accounts[k]
+        chars = chars_of[k]
+        if acc is None:                  # characters only: invent the account
+            first = chars[0]
+            acc = {"name": "", "account": (first.get("account") or "").strip(),
+                   "class": "", "realm": first.get("realm", "")}
+            for f in ACCOUNT_OWNED:
+                acc[f] = first.get(f, "")
+        for c in chars:                  # lift legacy per-character values
+            for f in ACCOUNT_OWNED:
+                if not acc.get(f) and c.get(f):
+                    acc[f] = c[f]
+        acc["class"] = ""
+        for c in chars:                  # then copy the account's down
+            for f in ACCOUNT_OWNED:
+                c[f] = acc.get(f, "")
+            c["account"] = acc.get("account", "")
+            if not (c.get("realm") or "").strip():
+                c["realm"] = acc.get("realm", "")
+        result.append(acc)
+        result.extend(chars)
+    result.extend(orphans)
+
+    cfg["characters"] = result
+    hidden = cfg.get("hidden_chars")
+    cfg["hidden_chars"] = hidden if isinstance(hidden, list) else []
+    return _roster_snapshot(result) != before
+
+
+def roster_groups(cfg):
+    """[(account_index | None, account_entry | None, [(index, char), ...])]
+    in display order. The None group holds characters with no login."""
+    groups, by_key, orphans = [], {}, []
+    for i, e in enumerate(cfg.get("characters", [])):
+        k = acc_key(e.get("account"))
+        if is_account_entry(e):
+            g = (i, e, [])
+            groups.append(g)
+            by_key[k] = g
+        elif k in by_key:
+            by_key[k][2].append((i, e))
+        else:
+            orphans.append((i, e))
+    if orphans:
+        groups.append((None, None, orphans))
+    return groups
+
+
+def account_entry_for(cfg, login):
+    k = acc_key(login)
+    for e in cfg.get("characters", []):
+        if is_account_entry(e) and acc_key(e.get("account")) == k:
+            return e
+    return None
+
+
+def insert_character(cfg, char):
+    """Place a new character right after the last entry of its account."""
+    entries = cfg.setdefault("characters", [])
+    k = acc_key(char.get("account"))
+    last = max((i for i, e in enumerate(entries)
+                if acc_key(e.get("account")) == k), default=None)
+    if last is None:
+        entries.append(char)
+    else:
+        entries.insert(last + 1, char)
+    unhide_character(cfg, char)
+
+
+def hide_character(cfg, char):
+    key = char_key(char.get("account"), char.get("realm"), char.get("name"))
+    hidden = cfg.setdefault("hidden_chars", [])
+    if key not in hidden:
+        hidden.append(key)
+
+
+def unhide_character(cfg, char):
+    key = char_key(char.get("account"), char.get("realm"), char.get("name"))
+    hidden = cfg.get("hidden_chars") or []
+    if key in hidden:
+        hidden.remove(key)
+
+
+def remove_account(cfg, login):
+    """Drop an account and every character on it. Returns how many entries
+    went. Its hidden-character marks go too, so re-adding the account later
+    brings its characters back."""
+    k = acc_key(login)
+    before = len(cfg.get("characters", []))
+    cfg["characters"] = [e for e in cfg.get("characters", [])
+                         if acc_key(e.get("account")) != k]
+    cfg["hidden_chars"] = [h for h in cfg.get("hidden_chars") or []
+                           if not h.startswith(k + "|")]
+    return before - len(cfg["characters"])
+
+
+# ── character lists written by the patch DLL ─────────────────────────────────
+# Every time the client receives a character list, AwesomeWotlkLib.dll writes
+# it to <game>/WowManagerData/<login>__<realmhash>.json. That lets an account
+# entered with just a login and password fill itself in on first login.
+
+CHARLIST_DIR = "WowManagerData"
+
+
+def _charlist_dir(wow_dir):
+    return os.path.join(wow_dir or "", CHARLIST_DIR)
+
+
+def charlist_signature(wow_dir):
+    """Cheap change detector: (name, mtime, size) of every list file."""
+    d = _charlist_dir(wow_dir)
+    try:
+        names = sorted(n for n in os.listdir(d) if n.endswith(".json"))
+    except OSError:
+        return ()
+    sig = []
+    for n in names:
+        try:
+            st = os.stat(os.path.join(d, n))
+            sig.append((n, st.st_mtime, st.st_size))
+        except OSError:
+            pass
+    return tuple(sig)
+
+
+def read_char_lists(wow_dir):
+    out = []
+    d = _charlist_dir(wow_dir)
+    try:
+        names = [n for n in os.listdir(d) if n.endswith(".json")]
+    except OSError:
+        return out
+    for n in sorted(names):
+        try:
+            with open(os.path.join(d, n), "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            continue                      # half-written or foreign — skip
+        if (isinstance(data, dict) and data.get("account")
+                and isinstance(data.get("chars"), list)):
+            out.append(data)
+    return out
+
+
+def import_char_lists(cfg, lists):
+    """Add characters the game reported for accounts we know. Returns the
+    names added. Existing characters only get a missing class filled in;
+    characters the user deleted stay deleted (see hide_character)."""
+    added = []
+    hidden = set(cfg.get("hidden_chars") or [])
+    for data in lists:
+        acc = account_entry_for(cfg, data.get("account"))
+        if acc is None:
+            continue                      # not ours: no password to use
+        realm = (data.get("realm") or "").strip() or acc.get("realm", "")
+        k = acc_key(acc.get("account"))
+        for ch in data.get("chars") or []:
+            if not isinstance(ch, dict):
+                continue
+            name = (ch.get("name") or "").strip()
+            if not name:
+                continue
+            try:
+                cls = CLASS_BY_ID.get(int(ch.get("class") or 0), "")
+            except (TypeError, ValueError):
+                cls = ""
+            existing = None
+            for e in cfg.get("characters", []):
+                if (not is_account_entry(e)
+                        and acc_key(e.get("account")) == k
+                        and (e.get("name") or "").strip().lower() == name.lower()
+                        and (not (e.get("realm") or "").strip()
+                             or (e.get("realm") or "").strip().lower()
+                             == realm.lower())):
+                    existing = e
+                    break
+            if existing is not None:
+                if not existing.get("class") and cls:
+                    existing["class"] = cls
+                continue
+            if char_key(acc.get("account"), realm, name) in hidden:
+                continue
+            insert_character(cfg, {"name": name, "account": acc["account"],
+                                   "class": cls, "realm": realm,
+                                   "auto": True})
+            added.append(name)
+    if added:
+        normalize_roster(cfg)
+    return added
 
 
 # ── AwesomeWotlk auto-deploy ──────────────────────────────────────────────────
@@ -2123,29 +2604,6 @@ def launch_wow(cfg, char, on_error=None):
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _row_colors(class_color):
-    """Return (background, foreground) for a row of this class. Saturated
-    enough to identify the class instantly; foreground auto-picks black or
-    white based on the resulting background's luminance for readability."""
-    r, g, b = (int(class_color[1:3], 16), int(class_color[3:5], 16),
-               int(class_color[5:7], 16))
-    if CURRENT_THEME in ("dark", "wow"):
-        tr, tg, tb = (int(PANEL[1:3], 16), int(PANEL[3:5], 16),
-                      int(PANEL[5:7], 16))
-        a = 0.34          # subtle class hue on dark panel
-    else:
-        tr, tg, tb = 255, 255, 255
-        a = 0.28          # subtle class hue on white — keeps text readable
-    br = int(r * a + tr * (1 - a))
-    bg = int(g * a + tg * (1 - a))
-    bb = int(b * a + tb * (1 - a))
-    bg_hex = "#{:02X}{:02X}{:02X}".format(br, bg, bb)
-    # Rec. 601 luma — pick contrasting fg
-    luma = 0.299 * br + 0.587 * bg + 0.114 * bb
-    fg_hex = "#1A1A1A" if luma > 150 else "#F2F2F2"
-    return bg_hex, fg_hex
-
-
 def _hyperlink(parent, text, url, bg=None, **kw):
     lbl = tk.Label(parent, text=text, fg=LINK, cursor="hand2",
                    bg=bg if bg else parent["bg"],
@@ -2403,10 +2861,10 @@ class App:
         # Read without decrypting: master mode needs a themed password prompt,
         # and the theme is only known once the config has been read.
         self.cfg = load_cfg(decrypt=False)
-        apply_theme(self.cfg.get("theme", "light"))
+        init_fonts(root)
+        apply_theme(self.cfg.get("theme", "dark"))
         set_lang(self.cfg.get("lang", "ru"))
         self.search_var = tk.StringVar()
-        self.count_var  = tk.StringVar()
         self.summary_var = tk.StringVar()
         self._tray_icon = None
         self._banners = {}   # kind -> dict(text, action_label, action, accent)
@@ -2632,12 +3090,17 @@ class App:
         # Overlay relog watcher
         self._relog_seen = int(time.time())
         threading.Thread(target=self._relog_watcher, daemon=True).start()
+        threading.Thread(target=self._check_char_lists, daemon=True).start()
 
     def _relog_watcher(self):
         """Poll the addon for an overlay relog request; once Wow.exe has closed,
         relaunch the chosen character through the manager."""
         while True:
             time.sleep(3)
+            try:
+                self._check_char_lists()
+            except Exception:
+                pass
             try:
                 if not self.cfg.get("overlay"):
                     continue
@@ -2682,178 +3145,204 @@ class App:
         finally:
             self._ig_refreshing = False
 
+    # ── styling ───────────────────────────────────────────────────────────────
+
     def _apply_ttk_styles(self):
         st = ttk.Style()
         try:
             st.theme_use("clam")
         except Exception:
             pass
-        st.configure("Treeview",
-                     background=PANEL, foreground=TEXT,
-                     fieldbackground=PANEL, borderwidth=0, rowheight=22)
-        # Barely-visible separators between column headers only
-        st.configure("Treeview.Heading",
-                     background=BORDER, foreground=TEXT, borderwidth=1,
-                     relief="groove", font=("Segoe UI", 9, "bold"))
-        # Selection reads as a darkening of the row, not a colour fill
-        st.map("Treeview",
+        st.configure("Roster.Treeview",
+                     background=PANEL, foreground=TEXT, fieldbackground=PANEL,
+                     borderwidth=0, rowheight=32, font=font(10))
+        st.layout("Roster.Treeview",
+                  [("Roster.Treeview.treearea", {"sticky": "nswe"})])
+        st.configure("Roster.Treeview.Heading",
+                     background=PANEL, foreground=MUTED, borderwidth=0,
+                     relief="flat", font=font(9, "bold"), padding=(10, 8))
+        st.map("Roster.Treeview.Heading",
+               background=[("active", PANEL)], foreground=[("active", TEXT)])
+        st.map("Roster.Treeview",
                background=[("selected", SEL_BG)],
                foreground=[("selected", SEL_FG)])
-        st.map("Treeview.Heading",
-               background=[("active", BORDER)])
+        # Legacy tables in dialogs keep a plain look in the same palette
+        st.configure("Treeview", background=PANEL, foreground=TEXT,
+                     fieldbackground=PANEL, borderwidth=0, rowheight=24)
+        st.configure("Treeview.Heading", background=BTN_BG, foreground=TEXT,
+                     borderwidth=0, relief="flat", font=font(9, "bold"))
+        st.map("Treeview", background=[("selected", SEL_BG)],
+               foreground=[("selected", SEL_FG)])
+        # Thin, arrow-less scrollbars
+        for orient in ("Vertical", "Horizontal"):
+            name = "Slim.%s.TScrollbar" % orient
+            st.layout(name, [("%s.Scrollbar.trough" % orient, {
+                "sticky": "ns" if orient == "Vertical" else "we",
+                "children": [("%s.Scrollbar.thumb" % orient,
+                              {"expand": "1", "sticky": "nswe"})]})])
+            st.configure(name, troughcolor=PANEL, background=BTN_BG,
+                         bordercolor=PANEL, lightcolor=BTN_BG,
+                         darkcolor=BTN_BG, relief="flat", gripcount=0,
+                         width=10, arrowsize=10)
+            st.map(name, background=[("active", BTN_HOVER)])
+        st.configure("TCombobox", fieldbackground=ENTRY_BG, background=BTN_BG,
+                     foreground=TEXT, arrowcolor=TEXT, bordercolor=BORDER,
+                     lightcolor=ENTRY_BG, darkcolor=ENTRY_BG,
+                     selectbackground=ENTRY_BG, selectforeground=TEXT)
+        st.map("TCombobox", fieldbackground=[("readonly", ENTRY_BG)],
+               foreground=[("readonly", TEXT)],
+               selectbackground=[("readonly", ENTRY_BG)],
+               selectforeground=[("readonly", TEXT)])
+        self.root.option_add("*TCombobox*Listbox.background", ENTRY_BG)
+        self.root.option_add("*TCombobox*Listbox.foreground", TEXT)
+        self.root.option_add("*TCombobox*Listbox.selectBackground", SEL_BG)
+        self.root.option_add("*TCombobox*Listbox.selectForeground", SEL_FG)
+        self.root.option_add("*TCombobox*Listbox.font", font(10))
 
     def _save_window_state(self):
         try:
             self.cfg["win_geometry"] = self.root.geometry()
-            if getattr(self, "_acc_in_pane", False):
-                self.cfg["sash_pos"] = self._paned.sashpos(0)
             save_cfg(self.cfg)
         except Exception:
             pass
 
-    def rebuild(self):
-        self._save_window_state()
-        self._hide_card()
-        for w in self.root.winfo_children():
-            w.destroy()
-        self.root.configure(bg=BG)
-        self.build()
+    # ── main window ──────────────────────────────────────────────────────────
 
     def build(self):
         self._apply_ttk_styles()
+        self.root.title(t(APP_TITLE))
+        style_window_chrome(self.root)
 
-        # Banner strip at the very top (clock-drift / update notices)
         self._banner_area = tk.Frame(self.root, bg=BG)
         self._banner_area.pack(fill="x", side="top")
         self._render_banners()
 
-        toolbar = tk.Frame(self.root, bg=BG)
-        toolbar.pack(fill="x", padx=16, pady=(14, 8))
+        # ── header: search + actions ─────────────────────────────────────────
+        header = tk.Frame(self.root, bg=BG)
+        header.pack(fill="x", padx=20, pady=(16, 10))
 
-        tk.Label(toolbar, text=t("Поиск"), bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(side="left")
-        search = _make_entry(toolbar, self.search_var)
-        search.pack(side="left", fill="x", expand=True, padx=(8, 12), ipady=6)
-        search.bind("<KeyRelease>", lambda _e: self.render_rows())
+        search_box = tk.Frame(header, bg=ENTRY_BG, highlightthickness=1,
+                              highlightbackground=BORDER, highlightcolor=ACCENT)
+        search_box.pack(side="left", fill="x", expand=True, padx=(0, 12))
+        tk.Label(search_box, text=icon_glyph("search"), bg=ENTRY_BG, fg=MUTED,
+                 font=(ICON_FONT, 11) if ICON_FONT else font(11)
+                 ).pack(side="left", padx=(12, 6))
+        self._search_entry = tk.Entry(
+            search_box, textvariable=self.search_var, bg=ENTRY_BG, fg=TEXT,
+            insertbackground=TEXT, relief="flat", font=font(10), bd=0)
+        self._search_entry.pack(side="left", fill="x", expand=True, ipady=8)
+        placeholder = tk.Label(search_box, text=t("Поиск персонажа или аккаунта"),
+                               bg=ENTRY_BG, fg=MUTED, font=font(10))
 
-        tk.Button(toolbar, text=t("Добавить"), bg=PRIMARY_BG, fg=PRIMARY_FG,
-                  relief="flat", padx=14, pady=7, command=self.add_char
-                  ).pack(side="left", padx=(0, 6))
-        tk.Button(toolbar, text=t("Изменить"), bg=BTN_BG, fg=TEXT, relief="flat",
-                  padx=14, pady=7, command=self.edit_selected
-                  ).pack(side="left", padx=(0, 6))
-        tk.Button(toolbar, text=t("Удалить"), bg=BTN_BG, fg=TEXT, relief="flat",
-                  padx=14, pady=7, command=self.delete_selected
-                  ).pack(side="left", padx=(0, 6))
-        tk.Button(toolbar, text=t("Настройки"), bg=BTN_BG, fg=TEXT,
-                  relief="flat", padx=14, pady=7, command=self.settings
-                  ).pack(side="right")
+        def _placeholder(*_):
+            if self.search_var.get():
+                placeholder.place_forget()
+            else:
+                placeholder.place(in_=self._search_entry, x=2, rely=0.5,
+                                  anchor="w")
+        placeholder.bind("<Button-1>", lambda _e: self._search_entry.focus_set())
+        self.search_var.trace_add("write", _placeholder)
+        self.search_var.trace_add("write", lambda *_: self.render_rows())
+        _placeholder()
 
-        # Everything the addon collected, added up across the whole roster.
-        tk.Label(self.root, textvariable=self.summary_var, bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9), anchor="w"
-                 ).pack(fill="x", padx=18, pady=(0, 8))
+        self._btn_play = FlatButton(header, t("Играть"), icon="play",
+                                    kind="primary", command=self.launch_selected)
+        self._btn_play.pack(side="left", padx=(0, 8))
+        FlatButton(header, t("Аккаунт"), icon="add",
+                   command=lambda: self.account_dialog(None)
+                   ).pack(side="left", padx=(0, 8))
+        FlatButton(header, t("Персонаж"), icon="add",
+                   command=self.add_character).pack(side="left", padx=(0, 8))
+        self._btn_edit = FlatButton(header, icon="edit", padx=11,
+                                    command=self.edit_selected)
+        self._btn_edit.pack(side="left", padx=(0, 8))
+        self._btn_delete = FlatButton(header, icon="delete", padx=11,
+                                      command=self.delete_selected)
+        self._btn_delete.pack(side="left", padx=(0, 8))
+        FlatButton(header, icon="settings", padx=11,
+                   command=self.settings).pack(side="left")
 
-        # ── Characters table (configurable columns) ──────────────────────────
+        # ── summary chips ────────────────────────────────────────────────────
+        self._chips = tk.Frame(self.root, bg=BG)
+        self._chips.pack(fill="x", padx=20, pady=(0, 10))
+
+        # ── the roster: one tree, accounts with their characters ─────────────
+        card = tk.Frame(self.root, bg=PANEL, highlightthickness=1,
+                        highlightbackground=BORDER)
+        card.pack(fill="both", expand=True, padx=20, pady=(0, 8))
+        self._tree_card = card
+
         self._cols = [c for c in self.cfg.get("columns", DEFAULT_COLUMNS)
-                      if c] or list(DEFAULT_COLUMNS)
+                      if c and c != "name"]
         labels = self.cfg.get("column_labels", {})
         widths = self.cfg.get("column_widths", {})
 
-        # Vertical paned window → the divider between the two tables can be
-        # dragged to resize the accounts table.
-        paned = ttk.PanedWindow(self.root, orient="vertical")
-        paned.pack(fill="both", expand=True, padx=16, pady=(0, 6))
-        self._paned = paned
-
-        table_wrap = tk.Frame(paned, bg=PANEL,
-                              highlightbackground=BORDER, highlightthickness=1)
-        paned.add(table_wrap, weight=4)
-
-        self.tree = ttk.Treeview(table_wrap, columns=tuple(self._cols),
-                                 show="headings", selectmode="browse")
+        tree = ttk.Treeview(card, columns=tuple(self._cols), show="tree headings",
+                            selectmode="browse", style="Roster.Treeview")
+        tree.heading("#0", text=labels.get("name") or t("Аккаунт / персонаж"),
+                     anchor="w")
+        tree.column("#0", width=int(widths.get("name", 240)), minwidth=160,
+                    stretch=False, anchor="w")
         for col in self._cols:
             default_label, w, anchor, _getter = col_meta(col)
-            self.tree.heading(col, text=(labels.get(col) or t(default_label)))
-            self.tree.column(col, width=int(widths.get(col, w)), anchor=anchor,
-                             stretch=False)
-        self.tree.pack(side="left", fill="both", expand=True)
-        self.tree.bind("<Configure>", self._fit_columns)
-        self.tree.bind("<Double-1>", self._on_activate)
-        self.tree.bind("<Return>",   self._on_activate)
-        self._drag_iid = None
-        self._drag_moved = False
-        self.tree.bind("<ButtonPress-1>",   self._on_drag_start)
-        self.tree.bind("<B1-Motion>",       self._on_drag_motion)
-        self.tree.bind("<ButtonRelease-1>", self._on_drag_drop)
-        self._card = None
-        self._card_row = None
-        self.tree.bind("<Motion>", self._on_tree_motion)
-        self.tree.bind("<Leave>",  lambda _e: self._hide_card())
-        self.tree.bind("<ButtonPress-1>", lambda _e: self._hide_card(), add="+")
-        self.tree.bind("<Button-1>",
-                       lambda e: self._table_click(self.tree, e), add="+")
-        # Focus-follows-mouse: the table under the cursor becomes active right
-        # away, so a single click selects a row (no "activating" first click).
-        self.tree.bind("<Enter>", lambda _e: self._activate_table(self.tree))
-        self.tree.bind("<<TreeviewSelect>>",
-                       lambda _e: self._strip_focus_ring(self.tree), add="+")
-        self.tree.bind("<ButtonRelease-1>", self._save_col_widths, add="+")
+            tree.heading(col, text=(labels.get(col) or t(default_label)),
+                         anchor=anchor)
+            tree.column(col, width=int(widths.get(col, w)), anchor=anchor,
+                        stretch=False)
+        sb = ttk.Scrollbar(card, orient="vertical", command=tree.yview,
+                           style="Slim.Vertical.TScrollbar")
+        sb.pack(side="right", fill="y", padx=(0, 2), pady=2)
+        tree.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=(2, 6))
+        tree.configure(yscrollcommand=sb.set)
+        self.tree = tree
 
-        for cls, color in CLASS_COLORS.items():
-            bg_, fg_ = _row_colors(color)
-            self.tree.tag_configure(f"cls_{cls}",
-                                    background=bg_, foreground=fg_)
+        tree.tag_configure("account", font=font(10, "bold"), background=ACC_ROW,
+                           foreground=TEXT)
+        tree.tag_configure("orphans", font=font(10, "bold"), foreground=MUTED)
+        for cls in CLASS_COLORS:
+            tree.tag_configure("cls_" + cls, foreground=class_text_color(cls))
 
-        sb = ttk.Scrollbar(table_wrap, orient="vertical",
-                           command=self.tree.yview)
-        sb.pack(side="right", fill="y")
-        self.tree.configure(yscrollcommand=sb.set)
+        tree.bind("<Configure>", self._fit_columns)
+        tree.bind("<Double-1>", self._on_double)
+        tree.bind("<Return>", lambda _e: self.launch_selected())
+        tree.bind("<Delete>", lambda _e: self.delete_selected())
+        tree.bind("<F2>", lambda _e: self.edit_selected())
+        tree.bind("<Button-3>", self._on_context)
+        tree.bind("<<TreeviewSelect>>", lambda _e: self._update_actions())
+        self._drag = None
+        tree.bind("<ButtonPress-1>", self._on_drag_start)
+        tree.bind("<B1-Motion>", self._on_drag_motion)
+        tree.bind("<ButtonRelease-1>", self._on_drag_drop)
+        tree.bind("<ButtonRelease-1>", self._save_col_widths, add="+")
+        tree.bind("<Motion>", self._on_tree_motion)
+        tree.bind("<Leave>", lambda _e: self._hide_card())
+        tree.bind("<ButtonPress-1>", lambda _e: self._hide_card(), add="+")
+        tree.bind("<Enter>", lambda _e: tree.focus_set())
 
-        # ── Accounts table (separate pane: login / realm / server) ────────────
-        # Added to / removed from the paned window in render_rows.
-        self._acc_cols = ("account", "realm", "realmlist")
-        acc_wrap = tk.Frame(paned, bg=PANEL,
-                            highlightbackground=BORDER, highlightthickness=1)
-        self._acc_wrap = acc_wrap
-        self._acc_in_pane = False
-        self._sash_restored = False
-        self.acc_tree = ttk.Treeview(acc_wrap, columns=self._acc_cols,
-                                     show="headings", selectmode="browse",
-                                     height=6)
-        self.acc_tree.heading("account",   text=t("Аккаунт"))
-        self.acc_tree.heading("realm",     text=t("Реалм"))
-        self.acc_tree.heading("realmlist", text=t("Realmlist"))
-        self.acc_tree.column("account",   width=160, anchor="w")
-        self.acc_tree.column("realm",     width=240, anchor="w")
-        self.acc_tree.column("realmlist", width=180, anchor="w", stretch=True)
-        self.acc_tree.pack(side="left", fill="both", expand=True)
-        self.acc_tree.bind("<Double-1>", self._on_activate)
-        self.acc_tree.bind("<Return>",   self._on_activate)
-        self.acc_tree.bind("<Button-1>",
-                           lambda e: self._table_click(self.acc_tree, e), add="+")
-        self.acc_tree.bind("<Enter>",
-                           lambda _e: self._activate_table(self.acc_tree))
-        self.acc_tree.bind("<<TreeviewSelect>>",
-                           lambda _e: self._strip_focus_ring(self.acc_tree),
-                           add="+")
-        acc_sb = ttk.Scrollbar(acc_wrap, orient="vertical",
-                               command=self.acc_tree.yview)
-        acc_sb.pack(side="right", fill="y")
-        self.acc_tree.configure(yscrollcommand=acc_sb.set)
+        # Empty state, shown over the table when there is nothing yet
+        self._empty = tk.Frame(card, bg=PANEL)
+        tk.Label(self._empty, text=icon_glyph("people"), bg=PANEL, fg=MUTED,
+                 font=(ICON_FONT, 34) if ICON_FONT else font(30)).pack()
+        tk.Label(self._empty, text=t("Добавь первый аккаунт"), bg=PANEL,
+                 fg=TEXT, font=font(14, "bold")).pack(pady=(10, 4))
+        tk.Label(self._empty,
+                 text=t("Логин и пароль — персонажи подтянутся сами при "
+                        "первом входе в игру."),
+                 bg=PANEL, fg=MUTED, font=font(10)).pack()
+        FlatButton(self._empty, t("Добавить аккаунт"), icon="add",
+                   kind="primary", command=lambda: self.account_dialog(None)
+                   ).pack(pady=(16, 0))
 
-        bottom = tk.Frame(self.root, bg=BG)
-        bottom.pack(fill="x", padx=16, pady=(4, 10))
-        self._bottom = bottom
+        # ── footer ───────────────────────────────────────────────────────────
+        footer = tk.Frame(self.root, bg=BG)
+        footer.pack(fill="x", padx=20, pady=(0, 12))
+        tk.Label(footer,
+                 text=t("Двойной клик — играть  ·  ПКМ — все действия  ·  "
+                        "перетаскивание — порядок"),
+                 bg=BG, fg=MUTED, font=font(9)).pack(side="left")
+        _hyperlink(footer, TELEGRAM_HANDLE, TELEGRAM_URL, bg=BG
+                   ).pack(side="right", padx=(12, 0))
 
-        tk.Label(bottom, textvariable=self.count_var, bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(side="left")
-        tk.Label(bottom, text=t("    •    Отблагодарить:"), bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(side="left")
-        _hyperlink(bottom, TELEGRAM_HANDLE, TELEGRAM_URL, bg=BG
-                   ).pack(side="left", padx=(2, 0))
-
-        # Theme + language switchers (live here, not in Settings)
         lang_var = tk.StringVar(value=LANG)
         theme_var = tk.StringVar(value=CURRENT_THEME)
 
@@ -2873,44 +3362,43 @@ class App:
                 apply_theme(new)
                 self.rebuild()
 
-        lang_cb = ttk.Combobox(bottom, textvariable=lang_var,
+        lang_cb = ttk.Combobox(footer, textvariable=lang_var,
                                values=("ru", "en"), state="readonly",
-                               width=4, font=("Segoe UI", 9))
-        lang_cb.pack(side="right", padx=(8, 12))
+                               width=4, font=font(9))
+        lang_cb.pack(side="right", padx=(6, 0))
         lang_cb.bind("<<ComboboxSelected>>", _on_lang)
-        tk.Label(bottom, text=t("Язык:"), bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(side="right")
-
-        theme_cb = ttk.Combobox(bottom, textvariable=theme_var,
-                                values=("light", "dark", "wow"),
-                                state="readonly", width=6, font=("Segoe UI", 9))
-        theme_cb.pack(side="right", padx=(8, 14))
+        theme_cb = ttk.Combobox(footer, textvariable=theme_var,
+                                values=("dark", "light", "wow"),
+                                state="readonly", width=6, font=font(9))
+        theme_cb.pack(side="right", padx=(6, 0))
         theme_cb.bind("<<ComboboxSelected>>", _on_theme)
-        tk.Label(bottom, text=t("Тема:"), bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(side="right")
+
+        self.root.bind("<Control-f>", lambda _e: self._search_entry.focus_set())
+        self.root.bind("<Control-n>", lambda _e: self.account_dialog(None))
 
         self.render_rows()
 
     def _fit_columns(self, _e=None):
-        """Auto-fit columns to the table width: shrink proportionally when the
-        configured widths would overflow, else give spare space to the last
-        column. Display-only — does not change the saved widths."""
+        """Give spare width to the name column; shrink proportionally when the
+        configured widths don't fit. Display only — saved widths are kept."""
         try:
-            avail = self.tree.winfo_width()
-            if avail <= 1 or not self._cols:
+            avail = self.tree.winfo_width() - 4
+            if avail <= 1:
                 return
             wcfg = self.cfg.get("column_widths", {})
-            desired = [int(wcfg.get(c, col_meta(c)[1])) for c in self._cols]
+            keys = ["name"] + list(self._cols)
+            ids = ["#0"] + list(self._cols)
+            desired = [int(wcfg.get(k, 240 if k == "name" else col_meta(k)[1]))
+                       for k in keys]
             total = sum(desired)
             if total <= avail:
-                extra = avail - total
-                for i, col in enumerate(self._cols):
-                    w = desired[i] + (extra if i == len(self._cols) - 1 else 0)
-                    self.tree.column(col, width=w)
+                desired[0] += avail - total
+                for cid, w in zip(ids, desired):
+                    self.tree.column(cid, width=w)
             else:
                 scale = avail / total
-                for i, col in enumerate(self._cols):
-                    self.tree.column(col, width=max(28, int(desired[i] * scale)))
+                for cid, w in zip(ids, desired):
+                    self.tree.column(cid, width=max(40, int(w * scale)))
         except Exception:
             pass
 
@@ -2921,21 +3409,19 @@ class App:
         self._resizing = False
         try:
             widths = dict(self.cfg.get("column_widths", {}))
-            changed = False
-            for col in self._cols:
-                cur = self.tree.column(col, "width")
-                if widths.get(col) != cur:
-                    widths[col] = cur; changed = True
-            if changed:
+            for key, cid in [("name", "#0")] + [(c, c) for c in self._cols]:
+                widths[key] = self.tree.column(cid, "width")
+            if widths != self.cfg.get("column_widths"):
                 self.cfg["column_widths"] = widths
                 save_cfg(self.cfg)
         except Exception:
             pass
 
-    # ── sort key (configured in the columns constructor) ────────────────────
+    # ── rows ─────────────────────────────────────────────────────────────────
 
     def _sorted_items(self, items):
-        """Apply the configured default sort to (idx, char) pairs, if any."""
+        """Apply the configured sort to (index, character) pairs. Sorting works
+        inside each account — accounts themselves keep their own order."""
         srt = self.cfg.get("sort") or {}
         col = srt.get("col")
         if not col:
@@ -2949,112 +3435,638 @@ class App:
             elif col in STATIC_COLUMNS:
                 v = c.get(col, "")
             else:
-                v = col_meta(col)[3](c)
+                rec = INGAME.get(str(c.get("name", "")).lower()) or {}
+                v = rec.get(col, "") if numeric else col_meta(col)[3](c)
             if numeric:
                 digits = "".join(ch for ch in str(v) if ch.isdigit())
-                return int(digits) if digits else 0
+                return int(digits) if digits else -1
             return str(v).lower()
         return sorted(items, key=_key, reverse=bool(srt.get("reverse")))
 
-    # ── drag-and-drop reorder ───────────────────────────────────────────────
+    @staticmethod
+    def _matches(entry, q):
+        if not q:
+            return True
+        hay = " ".join(str(entry.get(k, "")) for k in
+                       ("name", "account", "realm", "realmlist")).lower()
+        hay += " " + class_disp(entry.get("class", "")).lower()
+        return q in hay
+
+    def _account_values(self, acc, chars):
+        """What an account row shows in the data columns: its own realm and
+        server, and totals over its characters where adding up makes sense."""
+        vals = []
+        for col in self._cols:
+            if col == "status":
+                vals.append(realm_status_text(acc.get("realmlist", "")))
+            elif col in ("realm", "realmlist", "account"):
+                vals.append(acc.get(col, ""))
+            elif col in ("gold", "played"):
+                total = 0
+                for _i, c in chars:
+                    rec = INGAME.get(str(c.get("name", "")).lower()) or {}
+                    try:
+                        total += int(rec.get(col) or 0)
+                    except (TypeError, ValueError):
+                        pass
+                vals.append((fmt_gold(total) if col == "gold"
+                             else _fmt_played(total)) if total else "")
+            else:
+                vals.append("")
+        return tuple(vals)
+
+    def render_rows(self):
+        tree = getattr(self, "tree", None)
+        if tree is None or not tree.winfo_exists():
+            return
+        q = self.search_var.get().strip().lower()
+        opened = {iid: bool(tree.item(iid, "open"))
+                  for iid in tree.get_children("")}
+        selected = tree.selection()
+        tree.delete(*tree.get_children(""))
+
+        groups = roster_groups(self.cfg)
+        n_acc = n_chars = 0
+        for acc_idx, acc, chars in groups:
+            n_chars += len(chars)
+            shown = [(i, c) for i, c in chars if self._matches(c, q)]
+            acc_hit = acc is not None and self._matches(acc, q)
+            if q and not shown and not acc_hit:
+                continue
+            if q and acc_hit and not shown:
+                shown = chars
+            shown = self._sorted_items(shown)
+            if acc is None:
+                parent = tree.insert("", "end", iid="orphans",
+                                     text="  " + t("Без аккаунта"),
+                                     values=("",) * len(self._cols),
+                                     open=True, tags=("orphans",))
+            else:
+                n_acc += 1
+                parent = str(acc_idx)
+                label = "  %s   ·   %s" % (
+                    acc.get("account", ""),
+                    len(chars) if chars else t("ждёт первого входа"))
+                tree.insert("", "end", iid=parent, text=label,
+                            values=self._account_values(acc, chars),
+                            open=True if q else opened.get(parent, True),
+                            tags=("account",))
+            for idx, c in shown:
+                # Realm status belongs to the account row; repeating it on
+                # every character only adds noise.
+                tree.insert(parent, "end", iid=str(idx),
+                            text=c.get("name", ""),
+                            values=tuple("" if col == "status"
+                                         else col_meta(col)[3](c)
+                                         for col in self._cols),
+                            tags=("cls_" + c.get("class", ""),))
+
+        for iid in selected:
+            if tree.exists(iid):
+                tree.selection_set(iid)
+                tree.see(iid)
+                break
+
+        if self.cfg.get("characters"):
+            self._empty.place_forget()
+        else:
+            self._empty.place(relx=0.5, rely=0.45, anchor="center")
+
+        self._render_chips(n_acc, n_chars)
+        self._update_actions()
+        self._refresh_tray()
+
+    def _render_chips(self, n_acc, n_chars):
+        for w in self._chips.winfo_children():
+            w.destroy()
+        self.summary_var.set(self._account_summary())
+        chips = [(t("Аккаунтов"), str(n_acc)), (t("Персонажей"), str(n_chars))]
+        summary = self.summary_var.get()
+        for part in summary.split("     •     "):
+            if ": " in part:
+                k, v = part.split(": ", 1)
+                chips.append((k, v))
+        for k, v in chips:
+            chip = tk.Frame(self._chips, bg=BTN_BG)
+            chip.pack(side="left", padx=(0, 8))
+            tk.Label(chip, text=k, bg=BTN_BG, fg=MUTED, font=font(9)
+                     ).pack(side="left", padx=(10, 4), pady=4)
+            tk.Label(chip, text=v, bg=BTN_BG, fg=TEXT, font=font(9, "bold")
+                     ).pack(side="left", padx=(0, 10), pady=4)
+
+    # ── selection & actions ──────────────────────────────────────────────────
+
+    def selected_entry(self):
+        """(index, entry) of the selected row, or (None, None)."""
+        sel = self.tree.selection() if getattr(self, "tree", None) else ()
+        if not sel or sel[0] == "orphans":
+            return None, None
+        try:
+            idx = int(sel[0])
+            return idx, self.cfg["characters"][idx]
+        except (ValueError, IndexError):
+            return None, None
+
+    def _update_actions(self):
+        has = self.selected_entry()[0] is not None
+        for b in (getattr(self, "_btn_play", None),
+                  getattr(self, "_btn_edit", None),
+                  getattr(self, "_btn_delete", None)):
+            if b is not None:
+                b.set_enabled(has)
+
+    def _on_double(self, e):
+        iid = self.tree.identify_row(e.y)
+        if not iid or iid == "orphans":
+            return
+        entry = self.cfg["characters"][int(iid)]
+        if is_account_entry(entry) and self.tree.get_children(iid):
+            return              # the tree's own double-click folds it
+        self._launch_char(entry)
+        return "break"
+
+    def _on_context(self, e):
+        iid = self.tree.identify_row(e.y)
+        if not iid or iid == "orphans":
+            return
+        self.tree.selection_set(iid)
+        idx = int(iid)
+        entry = self.cfg["characters"][idx]
+        m = tk.Menu(self.root, tearoff=0, bg=PANEL, fg=TEXT, bd=0,
+                    activebackground=SEL_BG, activeforeground=SEL_FG,
+                    font=font(10), relief="flat")
+        if is_account_entry(entry):
+            m.add_command(label=t("Войти в аккаунт"),
+                          command=lambda: self._launch_char(entry))
+            m.add_command(label=t("Добавить персонажа"),
+                          command=lambda: self.char_dialog(
+                              None, account=entry.get("account")))
+            m.add_separator()
+            m.add_command(label=t("Изменить аккаунт"),
+                          command=lambda: self.account_dialog(idx))
+        else:
+            m.add_command(label=t("Играть"),
+                          command=lambda: self._launch_char(entry))
+            m.add_separator()
+            m.add_command(label=t("Изменить"),
+                          command=lambda: self.char_dialog(idx))
+        m.add_command(label=t("Ярлык на рабочий стол"),
+                      command=lambda: self._make_shortcut(entry))
+        m.add_separator()
+        m.add_command(label=t("Удалить"), command=self.delete_selected)
+        try:
+            m.tk_popup(e.x_root, e.y_root)
+        finally:
+            m.grab_release()
+
+    def _make_shortcut(self, entry):
+        value = (entry.get("name") or "").strip() or entry.get("account", "")
+        try:
+            path = create_desktop_shortcut(value, value)
+            self._add_banner("shortcut",
+                             t("Ярлык создан на рабочем столе:\n{path}")
+                             .format(path=path).replace("\n", " "),
+                             accent=ACCENT)
+        except Exception as e:
+            messagebox.showerror(APP_TITLE,
+                                 t("Не удалось создать ярлык:\n{e}").format(e=e))
+
+    # ── drag to reorder ──────────────────────────────────────────────────────
 
     def _on_drag_start(self, e):
-        # heading-edge drag = column resize (so we persist widths on release)
         self._resizing = (self.tree.identify_region(e.x, e.y) == "separator")
         iid = self.tree.identify_row(e.y)
-        self._drag_iid = iid or None
-        self._drag_moved = False
+        # Reordering only makes sense on the full, unsorted list
+        if (not iid or iid == "orphans" or self.search_var.get().strip()
+                or (self.cfg.get("sort") or {}).get("col")):
+            self._drag = None
+            return
+        self._drag = {"iid": iid, "moved": False}
 
     def _on_drag_motion(self, e):
-        src = self._drag_iid
-        if not src:
+        d = self._drag
+        if not d:
             return
+        src = d["iid"]
         tgt = self.tree.identify_row(e.y)
-        if not tgt or tgt == src:
+        if not tgt or tgt == src or tgt == "orphans":
             return
-        # Live-move the row to the target position for instant feedback
-        self.tree.move(src, "", self.tree.index(tgt))
-        self._drag_moved = True
+        parent = self.tree.parent(src)
+        if parent == "":                     # an account moves among accounts
+            while self.tree.parent(tgt):
+                tgt = self.tree.parent(tgt)
+            if tgt == src or tgt == "orphans":
+                return
+        elif self.tree.parent(tgt) != parent:  # a character stays in its account
+            return
+        self.tree.move(src, parent, self.tree.index(tgt))
+        d["moved"] = True
 
     def _on_drag_drop(self, _e):
-        if not self._drag_iid or not self._drag_moved:
-            self._drag_iid = None
+        d, self._drag = self._drag, None
+        if not d or not d["moved"]:
             return
-        self._drag_iid = None
-        self._drag_moved = False
-        # Reorder character entries to match the visual order; keep account
-        # entries (in the separate table) in their original positions.
-        visual = [int(iid) for iid in self.tree.get_children("")]
-        if not visual:
+        entries = self.cfg["characters"]
+        order = []
+        for top in self.tree.get_children(""):
+            if top != "orphans":
+                order.append(int(top))
+            order.extend(int(c) for c in self.tree.get_children(top))
+        if sorted(order) != list(range(len(entries))):
+            self.render_rows()                # something is filtered: bail out
             return
-        chars_list = self.cfg["characters"]
-        char_positions = [i for i, c in enumerate(chars_list)
-                          if str(c.get("name", "")).strip()]
-        reordered = [chars_list[i] for i in visual]
-        result = list(chars_list)
-        for pos, c in zip(char_positions, reordered):
-            result[pos] = c
-        self.cfg["characters"] = result
+        self.cfg["characters"] = [entries[i] for i in order]
         save_cfg(self.cfg)
         self.render_rows()
 
-    def filtered(self):
-        q = self.search_var.get().strip().lower()
-        items = list(enumerate(self.cfg.get("characters", [])))
-        if not q:
-            return items
-        out = []
-        for i, c in items:
-            hay = " ".join(str(c.get(k, ""))
-                           for k in ("name", "class", "gs", "account", "realm",
-                                     "realmlist")).lower()
-            if q in hay:
-                out.append((i, c))
-        return out
+    # ── hover card ───────────────────────────────────────────────────────────
 
-    def render_rows(self):
-        for it in self.tree.get_children():
-            self.tree.delete(it)
-        for it in self.acc_tree.get_children():
-            self.acc_tree.delete(it)
+    def _on_tree_motion(self, e):
+        if not self.cfg.get("hover_card", True) or self._drag:
+            return
+        iid = self.tree.identify_row(e.y)
+        if not iid or iid == "orphans":
+            self._hide_card()
+            return
+        if iid == self._card_row:
+            return
+        self._hide_card()
+        try:
+            c = self.cfg["characters"][int(iid)]
+        except (ValueError, IndexError):
+            return
+        if is_account_entry(c):
+            return
+        self._card_row = iid
+        self._show_card(c, e.x_root + 18, e.y_root + 12)
 
-        chars, accounts = [], []
-        for idx, c in self._sorted_items(self.filtered()):
-            if str(c.get("name", "")).strip():
-                chars.append((idx, c))
+    # ── tray ─────────────────────────────────────────────────────────────────
+
+    def _setup_tray(self):
+        if sys.platform != "win32":
+            return
+        try:
+            import pystray
+            from PIL import Image
+        except Exception:
+            return
+        try:
+            icon_img = Image.open(_bundled("wow.ico"))
+        except Exception:
+            return
+
+        def show(_i=None, _it=None):
+            self.root.after(0, self._show_window)
+
+        def quit_(_i=None, _it=None):
+            self.root.after(0, self._quit)
+
+        def launcher(entry):
+            # Hop to the UI thread and go through _launch_char, which checks
+            # the master-password lock and the double-launch guard.
+            def _launch(_i=None, _it=None):
+                self.root.after(0, lambda: (
+                    entry in self.cfg.get("characters", [])
+                    and self._launch_char(entry)))
+            return _launch
+
+        def build_menu():
+            items = [pystray.MenuItem(t("Показать"), show, default=True),
+                     pystray.Menu.SEPARATOR]
+            for _ai, acc, chars in roster_groups(self.cfg)[:12]:
+                if acc is None:
+                    continue
+                sub = [pystray.MenuItem(t("Войти в аккаунт"), launcher(acc))]
+                if chars:
+                    sub.append(pystray.Menu.SEPARATOR)
+                sub += [pystray.MenuItem(c.get("name", "?"), launcher(c))
+                        for _i, c in chars[:20]]
+                items.append(pystray.MenuItem(acc.get("account", "?"),
+                                              pystray.Menu(*sub)))
+            items += [pystray.Menu.SEPARATOR,
+                      pystray.MenuItem(t("Выход"), quit_)]
+            return pystray.Menu(*items)
+
+        self._tray_icon = pystray.Icon("wow_manager", icon_img,
+                                       APP_TITLE, build_menu())
+        self._build_tray_menu = build_menu
+        threading.Thread(target=self._tray_icon.run, daemon=True).start()
+
+    # ── launching & editing ──────────────────────────────────────────────────
+
+    def launch_selected(self):
+        _idx, entry = self.selected_entry()
+        if entry is not None:
+            self._launch_char(entry)
+
+    def add_character(self):
+        _idx, entry = self.selected_entry()
+        account = entry.get("account") if entry else None
+        if not any(is_account_entry(e) for e in self.cfg.get("characters", [])):
+            self.account_dialog(None)
+            return
+        self.char_dialog(None, account=account)
+
+    def edit_selected(self):
+        idx, entry = self.selected_entry()
+        if entry is None:
+            return
+        if is_account_entry(entry):
+            self.account_dialog(idx)
+        else:
+            self.char_dialog(idx)
+
+    def delete_selected(self):
+        idx, entry = self.selected_entry()
+        if entry is None:
+            return
+        if is_account_entry(entry):
+            login = entry.get("account", "")
+            n = sum(1 for e in self.cfg["characters"]
+                    if not is_account_entry(e)
+                    and acc_key(e.get("account")) == acc_key(login))
+            text = (t("Удалить аккаунт «{name}» и его персонажей ({n})?")
+                    .format(name=login, n=n) if n else
+                    t("Удалить «{name}»?").format(name=login))
+            if not messagebox.askyesno(APP_TITLE, text):
+                return
+            remove_account(self.cfg, login)
+        else:
+            if not messagebox.askyesno(
+                    APP_TITLE, t("Удалить «{name}»?").format(
+                        name=entry.get("name", ""))):
+                return
+            self.cfg["characters"].pop(idx)
+            # Otherwise the next login would quietly import it again.
+            hide_character(self.cfg, entry)
+        save_cfg(self.cfg)
+        self.render_rows()
+
+    def _select_entry(self, entry):
+        try:
+            idx = self.cfg["characters"].index(entry)
+        except ValueError:
+            return
+        iid = str(idx)
+        if self.tree.exists(iid):
+            parent = self.tree.parent(iid)
+            if parent:
+                self.tree.item(parent, open=True)
+            self.tree.selection_set(iid)
+            self.tree.see(iid)
+
+    def _dialog(self, title):
+        dlg = tk.Toplevel(self.root)
+        dlg.title(title)
+        dlg.configure(bg=BG)
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        tk.Label(dlg, text=title, bg=BG, fg=TEXT, font=font(14, "bold")
+                 ).pack(padx=22, pady=(18, 4), anchor="w")
+        return dlg
+
+    def _field(self, dlg, label, widget_factory):
+        tk.Label(dlg, text=label, bg=BG, fg=MUTED, font=font(9), anchor="w"
+                 ).pack(fill="x", padx=22, pady=(10, 2))
+        w = widget_factory(dlg)
+        w.pack(fill="x", padx=22, ipady=5)
+        return w
+
+    def account_dialog(self, idx):
+        editing = idx is not None
+        acc = self.cfg["characters"][idx] if editing else {}
+        last_acc = next((e for e in reversed(self.cfg.get("characters", []))
+                         if is_account_entry(e)), {})
+        dlg = self._dialog(t("Аккаунт"))
+
+        login_var = tk.StringVar(value=acc.get("account", ""))
+        pass_var = tk.StringVar(value=acc.get("password", ""))
+        totp_var = tk.StringVar(value=acc.get("totp_secret", ""))
+        realm_var = tk.StringVar(value=acc.get("realm")
+                                 or last_acc.get("realm")
+                                 or (self.cfg.get("realms") or [""])[0])
+        rl_var = tk.StringVar(value=acc.get("realmlist")
+                              or last_acc.get("realmlist")
+                              or (self.cfg.get("realmlists") or [""])[0])
+
+        first = self._field(dlg, t("Логин аккаунта"),
+                            lambda p: _make_entry(p, login_var))
+        pw = self._field(dlg, t("Пароль"),
+                         lambda p: _make_entry(p, pass_var, show="●"))
+        show_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(dlg, text=t("Показать пароль"), variable=show_var,
+                       bg=BG, fg=MUTED, activebackground=BG,
+                       activeforeground=TEXT, selectcolor=ENTRY_BG,
+                       font=font(9), anchor="w",
+                       command=lambda: pw.configure(
+                           show="" if show_var.get() else "●")
+                       ).pack(fill="x", padx=20)
+
+        self._field(dlg, t("Реалм"), lambda p: ttk.Combobox(
+            p, textvariable=realm_var, values=self.cfg.get("realms", []),
+            font=font(10)))
+        self._field(dlg, t("Realmlist"), lambda p: ttk.Combobox(
+            p, textvariable=rl_var, values=self.cfg.get("realmlists", []),
+            font=font(10)))
+
+        tk.Label(dlg, text=t("Секрет 2FA (Google / 2FAS Auth / Yandex "
+                             "Authenticator)"),
+                 bg=BG, fg=MUTED, font=font(9), anchor="w"
+                 ).pack(fill="x", padx=22, pady=(10, 2))
+        row = tk.Frame(dlg, bg=BG)
+        row.pack(fill="x", padx=22)
+        _make_entry(row, totp_var).pack(side="left", fill="x", expand=True,
+                                        ipady=5)
+        code_var = tk.StringVar()
+        tk.Label(row, textvariable=code_var, bg=BG, fg=ACCENT, width=8,
+                 font=font(10, "bold")).pack(side="left", padx=(8, 0))
+
+        def refresh_code(*_):
+            sec = totp_var.get().strip()
+            code_var.set("" if not sec else (compute_totp(sec)
+                                             or t("невалидно")))
+        totp_var.trace_add("write", refresh_code)
+        refresh_code()
+        tk.Label(dlg, text=t("Если 2FA не подключена — оставь пусто."),
+                 bg=BG, fg=MUTED, font=font(8), anchor="w"
+                 ).pack(fill="x", padx=22)
+
+        if not editing:
+            tk.Label(dlg,
+                     text=t("Персонажей вводить не нужно: при первом входе в "
+                            "аккаунт они добавятся сами."),
+                     bg=BG, fg=ACCENT, font=font(9), wraplength=380,
+                     justify="left", anchor="w"
+                     ).pack(fill="x", padx=22, pady=(12, 0))
+
+        def save():
+            login = login_var.get().strip()
+            if not login:
+                messagebox.showwarning(APP_TITLE, t("Введи логин аккаунта."),
+                                       parent=dlg)
+                return
+            other = account_entry_for(self.cfg, login)
+            if other is not None and other is not acc:
+                messagebox.showwarning(
+                    APP_TITLE, t("Аккаунт «{name}» уже есть.").format(
+                        name=login), parent=dlg)
+                return
+            fields = {"account": login, "password": pass_var.get(),
+                      "totp_secret": normalize_totp_secret(totp_var.get()),
+                      "realm": realm_var.get().strip(),
+                      "realmlist": rl_var.get().strip()}
+            if editing:
+                old = acc.get("account", "")
+                for e in self.cfg["characters"]:
+                    if (not is_account_entry(e)
+                            and acc_key(e.get("account")) == acc_key(old)):
+                        e["account"] = login
+                acc.update(fields)
+                target = acc
             else:
-                accounts.append((idx, c))
+                target = dict(fields, name="", **{"class": ""})
+                self.cfg.setdefault("characters", []).append(target)
+            normalize_roster(self.cfg)
+            save_cfg(self.cfg)
+            dlg.destroy()
+            self.render_rows()
+            self._select_entry(target)
+            if not editing:
+                self._add_banner(
+                    "new_account",
+                    t("Аккаунт «{name}» добавлен. Войди в него — персонажи "
+                      "подтянутся сами.").format(name=login),
+                    t("Войти"), lambda e=target: (
+                        self._dismiss_banner("new_account"),
+                        self._launch_char(e)),
+                    accent=ACCENT)
 
-        for idx, c in chars:
-            tag = f"cls_{c.get('class', '')}"
-            values = tuple(col_meta(col)[3](c) for col in self._cols)
-            self.tree.insert("", "end", iid=str(idx), values=values, tags=(tag,))
+        FlatButton(dlg, t("Сохранить") if editing else t("Добавить"),
+                   kind="primary", command=save
+                   ).pack(fill="x", padx=22, pady=(18, 20))
+        dlg.bind("<Return>", lambda _e: save())
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+        first.focus_set()
+        self._fit_dialog(dlg, 440)
+        dlg.grab_set()
 
-        for idx, c in accounts:
-            self.acc_tree.insert("", "end", iid=str(idx), values=(
-                c.get("account", ""), c.get("realm", ""),
-                c.get("realmlist", "")))
+    def char_dialog(self, idx, account=None):
+        editing = idx is not None
+        ch = self.cfg["characters"][idx] if editing else {}
+        logins = [e.get("account", "") for e in self.cfg.get("characters", [])
+                  if is_account_entry(e)]
+        if not logins:
+            self.account_dialog(None)
+            return
+        start_acc = ch.get("account") or account or logins[0]
+        start_acc = next((l for l in logins if acc_key(l) == acc_key(start_acc)),
+                         logins[0])
+        acc_entry = account_entry_for(self.cfg, start_acc) or {}
 
-        # Show the accounts pane only when there are account-only entries.
-        if accounts:
-            if not self._acc_in_pane:
-                self._paned.add(self._acc_wrap, weight=1)
-                self._acc_in_pane = True
-            # Restore the saved divider position once, after layout settles
-            if not self._sash_restored:
-                self._sash_restored = True
-                pos = int(self.cfg.get("sash_pos") or 0)
-                if pos > 0:
-                    self.root.after(120, lambda p=pos:
-                                    self._safe_sashpos(p))
-        elif self._acc_in_pane:
-            self._paned.forget(self._acc_wrap)
-            self._acc_in_pane = False
+        dlg = self._dialog(t("Персонаж"))
+        name_var = tk.StringVar(value=ch.get("name", ""))
+        acc_var = tk.StringVar(value=start_acc)
+        stored = ch.get("class", "")
+        class_var = tk.StringVar(value=class_disp(stored) if stored
+                                 else t(NO_CLASS))
+        realm_var = tk.StringVar(value=ch.get("realm")
+                                 or acc_entry.get("realm", ""))
 
-        self.count_var.set(t("Персонажей: {c} · Аккаунтов: {a}").format(
-            c=len(chars), a=len(accounts)))
-        self.summary_var.set(self._account_summary())
-        self._refresh_tray()
+        first = self._field(dlg, t("Ник персонажа"),
+                            lambda p: _make_entry(p, name_var))
+        self._field(dlg, t("Аккаунт"), lambda p: ttk.Combobox(
+            p, textvariable=acc_var, values=logins, state="readonly",
+            font=font(10)))
+        self._field(dlg, t("Класс"), lambda p: ttk.Combobox(
+            p, textvariable=class_var, state="readonly", font=font(10),
+            values=[t(NO_CLASS)] + [class_disp(c) for c in WOW_CLASSES]))
+        self._field(dlg, t("Реалм"), lambda p: ttk.Combobox(
+            p, textvariable=realm_var, values=self.cfg.get("realms", []),
+            font=font(10)))
+        tk.Label(dlg, text=t("Пароль и 2FA берутся из аккаунта."),
+                 bg=BG, fg=MUTED, font=font(8), anchor="w"
+                 ).pack(fill="x", padx=22, pady=(6, 0))
+
+        def save():
+            name = name_var.get().strip()
+            login = acc_var.get().strip()
+            if not name:
+                messagebox.showwarning(APP_TITLE, t("Введи ник персонажа."),
+                                       parent=dlg)
+                return
+            realm = realm_var.get().strip()
+            for e in self.cfg["characters"]:
+                if (e is not ch and not is_account_entry(e)
+                        and acc_key(e.get("account")) == acc_key(login)
+                        and (e.get("name") or "").strip().lower() == name.lower()
+                        and (e.get("realm") or "").strip().lower()
+                        == realm.lower()):
+                    messagebox.showwarning(
+                        APP_TITLE, t("«{name}» уже есть на этом аккаунте.")
+                        .format(name=name), parent=dlg)
+                    return
+            cls_disp = class_var.get().strip()
+            cls = "" if cls_disp == t(NO_CLASS) else class_canon(cls_disp)
+            fields = {"name": name, "account": login, "class": cls,
+                      "realm": realm}
+            if editing:
+                moved = acc_key(ch.get("account")) != acc_key(login)
+                ch.update(fields)
+                if moved:                 # re-slot it under the new account
+                    self.cfg["characters"].remove(ch)
+                    insert_character(self.cfg, ch)
+                target = ch
+            else:
+                target = fields
+                insert_character(self.cfg, target)
+            normalize_roster(self.cfg)
+            save_cfg(self.cfg)
+            dlg.destroy()
+            self.render_rows()
+            self._select_entry(target)
+
+        FlatButton(dlg, t("Сохранить") if editing else t("Добавить"),
+                   kind="primary", command=save
+                   ).pack(fill="x", padx=22, pady=(18, 20))
+        dlg.bind("<Return>", lambda _e: save())
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+        first.focus_set()
+        self._fit_dialog(dlg, 420)
+        dlg.grab_set()
+
+    # ── characters reported by the game ──────────────────────────────────────
+
+    def _check_char_lists(self):
+        """Called from the watcher thread: notice new list files cheaply and
+        hand the actual import to the UI thread."""
+        wow = self.cfg.get("wow_path", "")
+        sig = charlist_signature(wow)
+        if sig and sig != getattr(self, "_charlist_sig", None):
+            self._charlist_sig = sig
+            lists = read_char_lists(wow)
+            self.root.after(0, lambda: self._import_char_lists(lists))
+
+    def _import_char_lists(self, lists):
+        added = import_char_lists(self.cfg, lists)
+        if not added:
+            return
+        save_cfg(self.cfg)
+        self.render_rows()
+        shown = ", ".join(added[:6]) + ("…" if len(added) > 6 else "")
+        self._add_banner("imported",
+                         t("Добавлены персонажи ({n}): {names}").format(
+                             n=len(added), names=shown),
+                         accent=ACCENT)
+
+    # ── kept from the previous window ─────────────────────────────────────
+
+    def rebuild(self):
+        self._save_window_state()
+        self._hide_card()
+        for w in self.root.winfo_children():
+            w.destroy()
+        self.root.configure(bg=BG)
+        self.build()
 
     def _account_summary(self):
         """One line over the whole roster: total gold, best geared character,
@@ -3088,83 +4100,6 @@ class App:
             parts.append(t("Наиграно: {t}").format(t=_fmt_played(played)))
         return "     •     ".join(parts)
 
-    def _safe_sashpos(self, pos):
-        try:
-            if self._acc_in_pane:
-                self._paned.sashpos(0, pos)
-        except Exception:
-            pass
-
-    def _activate_table(self, tree):
-        # Give keyboard focus to whichever table the mouse is over. On Windows a
-        # click on an unfocused control is otherwise "eaten" just to activate it,
-        # forcing a second click to actually select a row. Grabbing focus on
-        # hover removes that activating click entirely.
-        try:
-            if tree.focus_get() is not tree:
-                tree.focus_set()
-        except Exception:
-            try:
-                tree.focus_set()
-            except Exception:
-                pass
-        self._strip_focus_ring(tree)
-
-    def _strip_focus_ring(self, tree):
-        # Keep keyboard focus (needed so a single click selects a row) but drop
-        # the dotted/active rectangle ttk draws around the focus item — the
-        # selection fill alone is enough. Cleared after idle so it runs once
-        # ttk's own click handler (which sets the focus item) has finished.
-        def _clear():
-            try:
-                tree.focus("")
-            except Exception:
-                pass
-        try:
-            tree.after_idle(_clear)
-        except Exception:
-            pass
-
-    def _table_click(self, tree, e):
-        # Make a single click on EITHER table select the row under the cursor
-        # immediately — and drop the highlight in the other table so only one
-        # row is ever selected. This kills the "extra click just selects the
-        # table" behaviour when switching between the two tables.
-        row = tree.identify_row(e.y)
-        if not row:
-            return
-        tree.focus_set()
-        tree.selection_set(row)
-        other = self.acc_tree if tree is self.tree else self.tree
-        try:
-            cur = other.selection()
-            if cur:
-                other.selection_remove(*cur)
-        except Exception:
-            pass
-        self._strip_focus_ring(tree)
-
-    def selected_idx(self, silent=True):
-        # Prefer the table that currently has keyboard focus (the one the user
-        # last clicked); fall back to whichever has a selection.
-        focused = None
-        try:
-            focused = self.root.focus_get()
-        except Exception:
-            pass
-        order = ([self.acc_tree, self.tree] if focused is self.acc_tree
-                 else [self.tree, self.acc_tree])
-        for tr in order:
-            sel = tr.selection()
-            if sel:
-                try:
-                    return int(sel[0])
-                except (ValueError, IndexError):
-                    pass
-        return None
-
-    # ── hover info-card ─────────────────────────────────────────────────────
-
     def _hide_card(self):
         if self._card is not None:
             try:
@@ -3174,34 +4109,13 @@ class App:
             self._card = None
         self._card_row = None
 
-    def _on_tree_motion(self, e):
-        if not self.cfg.get("hover_card", True):
-            return
-        iid = self.tree.identify_row(e.y)
-        if not iid:
-            self._hide_card()
-            return
-        if iid == self._card_row:
-            return
-        self._hide_card()
-        try:
-            idx = int(iid)
-        except ValueError:
-            return
-        if 0 <= idx < len(self.cfg.get("characters", [])):
-            c = self.cfg["characters"][idx]
-            # No card for account-only entries (no character)
-            if not str(c.get("name", "")).strip():
-                return
-            self._card_row = iid
-            self._show_card(c, e.x_root + 18, e.y_root + 12)
-
     def _show_card(self, char, x, y):
         cls = char.get("class", "")
         color = CLASS_COLORS.get(cls, ACCENT)
         win = tk.Toplevel(self.root)
         win.overrideredirect(True)
         win.attributes("-topmost", True)
+        style_window_chrome(win, rounded=True)
         try:
             win.attributes("-alpha", 0.97)
         except Exception:
@@ -3313,54 +4227,6 @@ class App:
         win.geometry(f"+{x}+{y}")
         self._card = win
 
-    # ── tray ──────────────────────────────────────────────────────────────────
-
-    def _setup_tray(self):
-        if sys.platform != "win32":
-            return
-        try:
-            import pystray
-            from PIL import Image
-        except Exception:
-            return
-
-        try:
-            icon_img = Image.open(_bundled("wow.ico"))
-        except Exception:
-            return
-
-        def show(_i=None, _it=None):
-            self.root.after(0, self._show_window)
-
-        def quit_(_i=None, _it=None):
-            self.root.after(0, self._quit)
-
-        def launch_factory(idx):
-            def _launch(_i=None, _it=None):
-                if 0 <= idx < len(self.cfg.get("characters", [])):
-                    char = self.cfg["characters"][idx]
-                    try:
-                        launch_wow(self.cfg, char)
-                    except Exception:
-                        pass
-            return _launch
-
-        def build_menu():
-            chars = self.cfg.get("characters", [])
-            items = [pystray.MenuItem(t("Показать"), show, default=True),
-                     pystray.Menu.SEPARATOR]
-            for i, c in enumerate(chars[:15]):
-                lbl = c.get("name", "") or c.get("account", "") or f"#{i+1}"
-                items.append(pystray.MenuItem(lbl, launch_factory(i)))
-            items += [pystray.Menu.SEPARATOR,
-                      pystray.MenuItem(t("Выход"), quit_)]
-            return pystray.Menu(*items)
-
-        self._tray_icon = pystray.Icon("wow_manager", icon_img,
-                                       APP_TITLE, build_menu())
-        self._build_tray_menu = build_menu
-        threading.Thread(target=self._tray_icon.run, daemon=True).start()
-
     def _refresh_tray(self):
         if self._tray_icon and getattr(self, "_build_tray_menu", None):
             try:
@@ -3400,9 +4266,6 @@ class App:
             pass
         self.root.destroy()
 
-    def _on_activate(self, _e=None):
-        self.launch_selected()
-
     def _async_err(self, msg):
         # Worker-thread callback for async errors (loader button not found etc).
         # tkinter is single-threaded — hop back to the UI thread via after().
@@ -3429,12 +4292,6 @@ class App:
         except Exception as e:
             messagebox.showerror(APP_TITLE, str(e))
 
-    def launch_selected(self):
-        idx = self.selected_idx()
-        if idx is None:
-            return
-        self._launch_char(self.cfg["characters"][idx])
-
     def launch_by_value(self, value):
         """Launch the entry whose character name (preferred) or account login
         matches `value`. Used by desktop shortcuts and the IPC channel."""
@@ -3453,157 +4310,6 @@ class App:
     def _launch_then_hide(self, value):
         self.launch_by_value(value)
         self._hide_to_tray()
-
-    def delete_selected(self):
-        idx = self.selected_idx()
-        if idx is None:
-            return
-        c = self.cfg["characters"][idx]
-        name = c.get("name", "") or c.get("account", "") or "?"
-        if messagebox.askyesno(APP_TITLE, t("Удалить «{name}»?").format(name=name)):
-            self.cfg["characters"].pop(idx)
-            save_cfg(self.cfg)
-            self.render_rows()
-
-    def edit_selected(self):
-        idx = self.selected_idx()
-        if idx is not None:
-            self.character_dialog(idx)
-
-    def add_char(self):
-        self.character_dialog(None)
-
-    # ── character dialog ──────────────────────────────────────────────────────
-
-    def character_dialog(self, idx):
-        editing = idx is not None
-        if editing:
-            char = self.cfg["characters"][idx]
-        else:
-            # remember last entered fields (skip name)
-            chars = self.cfg.get("characters", [])
-            char = ({k: v for k, v in chars[-1].items() if k != "name"}
-                    if chars else {})
-
-        dlg = tk.Toplevel(self.root)
-        dlg.title(t("Запись"))
-        dlg.resizable(False, False)
-        dlg.configure(bg=BG)
-        dlg.grab_set()
-
-        tk.Label(dlg, text=t("Запись"), bg=BG, fg=TEXT,
-                 font=("Segoe UI", 13, "bold")
-                 ).pack(padx=20, pady=(18, 10), anchor="w")
-
-        name_var      = tk.StringVar(value=char.get("name", ""))
-        account_var   = tk.StringVar(value=char.get("account", ""))
-        password_var  = tk.StringVar(value=char.get("password", ""))
-        _stored_class = char.get("class", "Паладин")
-        class_var     = tk.StringVar(
-            value=t(NO_CLASS) if not _stored_class
-            else class_disp(_stored_class))
-        realm_var     = tk.StringVar(value=char.get("realm",
-                                          self.cfg["realms"][0]))
-        realmlist_var = tk.StringVar(value=char.get("realmlist",
-                                          self.cfg["realmlists"][0]))
-        totp_var      = tk.StringVar(value=char.get("totp_secret", ""))
-
-        def field(label, var, show=None):
-            tk.Label(dlg, text=label, bg=BG, fg=MUTED,
-                     font=("Segoe UI", 9)
-                     ).pack(fill="x", padx=20, pady=(8, 0))
-            ent = _make_entry(dlg, var, show=show)
-            ent.pack(fill="x", padx=20, ipady=5)
-            return ent
-
-        first = field(t("Ник персонажа (пусто = только аккаунт)"), name_var)
-        field(t("Логин аккаунта"), account_var)
-        field(t("Пароль"),         password_var, show="●")
-
-        tk.Label(dlg, text=t("Класс"), bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(fill="x", padx=20, pady=(8, 0))
-        ttk.Combobox(dlg, textvariable=class_var,
-                     values=[t(NO_CLASS)] + [class_disp(c) for c in WOW_CLASSES],
-                     state="readonly", font=("Segoe UI", 10)
-                     ).pack(fill="x", padx=20, ipady=4)
-
-        tk.Label(dlg, text=t("Реалм"), bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(fill="x", padx=20, pady=(8, 0))
-        ttk.Combobox(dlg, textvariable=realm_var, values=self.cfg["realms"],
-                     font=("Segoe UI", 10)
-                     ).pack(fill="x", padx=20, ipady=4)
-
-        tk.Label(dlg, text=t("Realmlist"), bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(fill="x", padx=20, pady=(8, 0))
-        ttk.Combobox(dlg, textvariable=realmlist_var,
-                     values=self.cfg["realmlists"], font=("Segoe UI", 10)
-                     ).pack(fill="x", padx=20, ipady=4)
-
-        # 2FA
-        tk.Label(dlg,
-                 text=t("Секрет 2FA (Google / 2FAS Auth / Yandex Authenticator)"),
-                 bg=BG, fg=MUTED, font=("Segoe UI", 9)
-                 ).pack(fill="x", padx=20, pady=(10, 0))
-        totp_row = tk.Frame(dlg, bg=BG)
-        totp_row.pack(fill="x", padx=20)
-        _make_entry(totp_row, totp_var).pack(side="left", fill="x",
-                                             expand=True, ipady=5)
-        totp_check_var = tk.StringVar(value="")
-        check_lbl = tk.Label(totp_row, textvariable=totp_check_var, bg=BG,
-                             fg=MUTED, font=("Segoe UI", 9, "bold"), width=8)
-        check_lbl.pack(side="left", padx=(8, 0))
-        tk.Label(dlg, text=t("Если 2FA не подключена — оставь пусто."),
-                 bg=BG, fg=MUTED, font=("Segoe UI", 8)
-                 ).pack(fill="x", padx=20, pady=(2, 0))
-
-        def refresh_code(*_):
-            secret = totp_var.get().strip()
-            if not secret:
-                totp_check_var.set("")
-                return
-            code = compute_totp(secret)
-            totp_check_var.set(code if code else t("невалидно"))
-        totp_var.trace_add("write", refresh_code)
-        refresh_code()
-
-        def save():
-            name = name_var.get().strip()
-            account = account_var.get().strip()
-            # Allow account-only entries (no character name), but require at
-            # least one of the two so the row isn't completely empty.
-            if not name and not account:
-                messagebox.showwarning(
-                    APP_TITLE,
-                    t("Введи ник персонажа или логин аккаунта."), parent=dlg)
-                return
-            cls_disp = class_var.get().strip()
-            cls = "" if cls_disp == t(NO_CLASS) else class_canon(cls_disp)
-            item = {
-                "name":        name,
-                "account":     account,
-                "password":    password_var.get(),
-                "class":       cls,
-                "realm":       realm_var.get().strip(),
-                "realmlist":   realmlist_var.get().strip(),
-                "totp_secret": totp_var.get().strip(),
-            }
-            if editing:
-                self.cfg["characters"][idx] = item
-            else:
-                self.cfg.setdefault("characters", []).append(item)
-            save_cfg(self.cfg)
-            self.render_rows()
-            dlg.destroy()
-
-        tk.Button(dlg, text=t("Сохранить") if editing else t("Добавить"),
-                  bg=PRIMARY_BG, fg=PRIMARY_FG, relief="flat", pady=9,
-                  cursor="hand2", command=save
-                  ).pack(fill="x", padx=20, pady=18)
-
-        first.focus_set()
-        self._fit_dialog(dlg, 440)
-
-    # ── loader settings dialog ──────────────────────────────────────────────
 
     def loader_settings(self, parent):
         dlg = tk.Toplevel(parent)
@@ -3700,6 +4406,7 @@ class App:
         sh = dlg.winfo_screenheight()
         h = min(int(sh * 0.92), max(200, dlg.winfo_reqheight()))
         dlg.geometry(f"{int(width)}x{h}")
+        style_window_chrome(dlg)
 
     def _fit_scroll(self, dlg, body, width, extra=80):
         """Size a scrollable dialog to its content, capped to the screen."""
@@ -4543,51 +5250,6 @@ class App:
                   relief="flat", padx=10, pady=2,
                   command=lambda: self.columns_constructor(dlg)
                   ).pack(side="right")
-
-        # ── Desktop shortcut for an entry (marked char / account) ────────────
-        sc_map = {}     # display label -> launch value
-        for c in self.cfg.get("characters", []):
-            nm = (c.get("name") or "").strip()
-            acc = (c.get("account") or "").strip()
-            if nm:
-                disp = "[П] " + nm
-                sc_map[disp] = nm
-            elif acc:
-                disp = "[А] " + acc
-                sc_map[disp] = acc
-        sc_displays = list(sc_map.keys())
-        tk.Label(body, text=t("Ярлык на рабочем столе для записи ([П] персонаж "
-                              "/ [А] аккаунт)"), bg=BG,
-                 fg=MUTED, font=("Segoe UI", 9)
-                 ).pack(fill="x", padx=20, pady=(12, 0))
-        sc_row = tk.Frame(body, bg=BG)
-        sc_row.pack(fill="x", padx=20, pady=(2, 8))
-        sc_var = tk.StringVar(value=(sc_displays[0] if sc_displays else ""))
-        ttk.Combobox(sc_row, textvariable=sc_var, values=sc_displays,
-                     state="readonly", font=("Segoe UI", 10)
-                     ).pack(side="left", fill="x", expand=True, ipady=2)
-
-        def make_shortcut():
-            if not sc_displays:
-                messagebox.showwarning(
-                    APP_TITLE, t("Сначала добавь хотя бы одну запись."),
-                    parent=dlg)
-                return
-            val = sc_map.get(sc_var.get(), "")
-            try:
-                p = create_desktop_shortcut(val, val)
-                messagebox.showinfo(
-                    APP_TITLE,
-                    t("Ярлык создан на рабочем столе:\n{path}").format(path=p),
-                    parent=dlg)
-            except Exception as e:
-                messagebox.showerror(
-                    APP_TITLE,
-                    t("Не удалось создать ярлык:\n{e}").format(e=e), parent=dlg)
-
-        tk.Button(sc_row, text=t("Сделать ярлык"), bg=BTN_BG, fg=TEXT,
-                  relief="flat", padx=10, command=make_shortcut
-                  ).pack(side="left", padx=(8, 0), ipady=2)
 
         # ── Config management (moved to the bottom) ──────────────────────────
         tk.Frame(body, bg=BORDER, height=1).pack(fill="x", padx=20, pady=(12, 6))

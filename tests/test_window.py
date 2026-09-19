@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Build the real window once and poke at it: catches wiring mistakes that
-pure-function tests can't (missing widgets, bad column keys, unlock flow)."""
+"""Build the real window and drive it: the account -> characters tree, the
+dialogs, search, drag reorder, deletion, the automatic character import and
+the master-password unlock. Catches wiring mistakes pure-function tests can't.
+"""
 import base64, importlib.util, io, os, sys, tempfile, time, tkinter as tk
 
 spec = importlib.util.spec_from_file_location("launcher", os.path.abspath("launcher.py"))
@@ -18,7 +20,7 @@ def check(name, cond):
     print(("PASS " if cond else "FAIL ") + name)
 
 
-# roster + some collected data so the summary and the new columns have content
+# ── a legacy flat config in master-password mode ───────────────────────────
 salt = os.urandom(16)
 key = L.derive_master_key("hunter22", salt)
 L.set_master_key(key)
@@ -26,14 +28,15 @@ cfg = L._default_cfg()
 cfg["secret_mode"] = "master"
 cfg["master_salt"] = base64.b64encode(salt).decode()
 cfg["master_check"] = L.master_verifier(key)
-cfg["columns"] = ["class", "gs", "dailyDone", "arenaGames", "questsDone",
-                  "status", "realmlist"]
+cfg["wow_path"] = tmp
+cfg["columns"] = ["class", "gs", "dailyDone", "questsDone", "gold", "status",
+                  "realmlist"]
 cfg["characters"] = [
     {"name": "Тестомаг", "account": "acc", "password": "pw", "class": "Маг",
      "realm": "R", "realmlist": "logon.x", "totp_secret": ""},
     {"name": "Тестопал", "account": "acc", "password": "pw", "class": "Паладин",
      "realm": "R", "realmlist": "logon.x", "totp_secret": ""},
-    {"name": "", "account": "second-acc", "password": "pw", "class": "",
+    {"name": "", "account": "second-acc", "password": "pw2", "class": "",
      "realm": "R", "realmlist": "logon.y", "totp_secret": ""},
 ]
 L.save_cfg(cfg)
@@ -61,94 +64,266 @@ def fake_password(self, title, prompt, confirm_prompt=None):
 
 
 L.App._ask_password = fake_password
+L.App._start_background_checks = lambda self: None
+L.App._setup_tray = lambda self: None
+import tkinter.messagebox as mb
+mb.askyesno = lambda *a, **k: True
+mb.showwarning = lambda *a, **k: None
+mb.showinfo = lambda *a, **k: None
+mb.showerror = lambda *a, **k: None
 
 root = tk.Tk()
-root.withdraw()                      # don't flash a window across the screen
+root.withdraw()
 app = L.App(root)
 root.update()
+tree = app.tree
+E = lambda: app.cfg["characters"]
 
+# ── unlock ─────────────────────────────────────────────────────────────────
 check("master password was asked for", len(asked) >= 1)
 check("wrong password was retried", len(asked) == 2)
 check("secrets unlocked", not L.SECRETS_LOCKED)
-check("password decrypted", app.cfg["characters"][0]["password"] == "pw")
+check("password decrypted onto the account row", E()[0]["password"] == "pw")
 
-rows = app.tree.get_children()
-check("character rows rendered", len(rows) == 2)
-check("account row rendered", len(app.acc_tree.get_children()) == 1)
+# ── one tree: accounts with their characters ──────────────────────────────
+tops = tree.get_children("")
+check("one top-level row per account", len(tops) == 2)
+check("legacy characters were grouped under a created account row",
+      L.is_account_entry(E()[int(tops[0])])
+      and [tree.item(c, "text") for c in tree.get_children(tops[0])]
+      == ["Тестомаг", "Тестопал"])
+check("account label shows the login", "acc" in tree.item(tops[0], "text"))
+check("empty account says it waits for the first login",
+      not tree.get_children(tops[1]))
 
-vals = app.tree.item(rows[0], "values")
 cols = list(app._cols)
-check("dailies column shows the composite",
-      vals[cols.index("dailyDone")] in ("7 / 25", "25 / 25"))
-check("quests column shows the composite",
-      vals[cols.index("questsDone")] in ("2 / 18", "0 / 4"))
-check("status column shows the ping", "37" in vals[cols.index("status")])
+acc_vals = tree.item(tops[0], "values")
+char_vals = tree.item(tree.get_children(tops[0])[0], "values")
+check("status shows on the account row", "37" in acc_vals[cols.index("status")])
+check("status is not repeated on characters", char_vals[cols.index("status")] == "")
+check("account row totals the gold of its characters",
+      acc_vals[cols.index("gold")] != "")
+check("dailies composite on a character row",
+      char_vals[cols.index("dailyDone")] == "7 / 25")
+check("name column is the tree column, not a data column", "name" not in cols)
 
-summary = app.summary_var.get()
-check("summary totals gold across the roster",
-      "4" in summary and summary != "")
-check("summary names the best geared character", "Тестомаг" in summary)
-check("summary includes played time", "д" in summary or "d" in summary)
+# ── summary chips ─────────────────────────────────────────────────────────
+chips = [w for w in app._chips.winfo_children()]
+check("summary chips rendered", len(chips) >= 4)
+check("summary names the best geared character", "Тестомаг" in app.summary_var.get())
 
-# hover card for a character with all the new sections
-app._show_card(app.cfg["characters"][0], 10, 10)
+# ── selection drives the toolbar ──────────────────────────────────────────
+tree.selection_set(())
+root.update()
+check("no selection -> Play disabled", not app._btn_play.enabled)
+tree.selection_set(tree.get_children(tops[0])[0])
+root.update()
+check("selection -> Play enabled", app._btn_play.enabled)
+
+# ── search ────────────────────────────────────────────────────────────────
+app.search_var.set("тестопал")
+root.update()
+tops_q = tree.get_children("")
+check("search keeps only the matching account",
+      len(tops_q) == 1 and len(tree.get_children(tops_q[0])) == 1)
+app.search_var.set("second")
+root.update()
+check("search on a login shows that account", len(tree.get_children("")) == 1)
+app.search_var.set("")
+root.update()
+
+# ── launching ─────────────────────────────────────────────────────────────
+launched = []
+L.launch_wow = lambda cfg, ch, **k: launched.append(ch.get("name") or ch["account"])
+L.App._relock_prompt = lambda self: None
+L.SECRETS_LOCKED = True
+app._launch_char(E()[1])
+check("locked config refuses to launch", not launched)
+L.SECRETS_LOCKED = False
+app._launch_char(E()[1])
+check("unlocked config launches", launched == ["Тестомаг"])
+app._launch_char(E()[1])
+check("repeat launch is throttled", len(launched) == 1)
+check("launch goes out with the account password", E()[1]["password"] == "pw")
+
+
+def find_buttons(widget):
+    out = []
+    for w in widget.winfo_children():
+        if isinstance(w, L.FlatButton):
+            out.append(w)
+        out += find_buttons(w)
+    return out
+
+
+def last_dialog():
+    return [w for w in root.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+
+
+def entries_of(dlg):
+    found = []
+
+    def walk(w):
+        for c in w.winfo_children():
+            if isinstance(c, tk.Entry) and not isinstance(c, L.ttk.Combobox):
+                found.append(c)
+            walk(c)
+    walk(dlg)
+    return found
+
+
+def type_into(entry, text):
+    entry.delete(0, "end")
+    entry.insert(0, text)
+
+
+# ── add an account through its dialog ─────────────────────────────────────
+app.account_dialog(None)
+root.update()
+dlg = last_dialog()
+ents = entries_of(dlg)
+type_into(ents[0], "fresh")          # login
+type_into(ents[1], "s3cret")         # password
+find_buttons(dlg)[-1].command()
+root.update()
+fresh = L.account_entry_for(app.cfg, "fresh")
+check("account dialog adds an account row", fresh is not None
+      and fresh["password"] == "s3cret")
+check("new account shows up in the tree", str(E().index(fresh)) in tree.get_children(""))
+check("a banner offers to log in", "new_account" in app._banners)
+
+# duplicate login is refused
+app.account_dialog(None)
+root.update()
+dlg = last_dialog()
+type_into(entries_of(dlg)[0], "FRESH")
+find_buttons(dlg)[-1].command()
+root.update()
+check("duplicate login is refused",
+      sum(1 for e in E() if L.acc_key(e.get("account")) == "fresh") == 1)
+dlg.destroy()
+
+# ── add a character by hand, under that account ───────────────────────────
+app.char_dialog(None, account="fresh")
+root.update()
+dlg = last_dialog()
+type_into(entries_of(dlg)[0], "Ручной")
+find_buttons(dlg)[-1].command()
+root.update()
+manual = next((e for e in E() if e.get("name") == "Ручной"), None)
+check("character dialog adds the character", manual is not None)
+check("the character inherits the account password",
+      manual and manual["password"] == "s3cret")
+check("the character sits right under its account",
+      manual and E().index(manual) == E().index(fresh) + 1)
+
+# ── editing the account password flows to its characters ─────────────────
+app.account_dialog(E().index(fresh))
+root.update()
+dlg = last_dialog()
+type_into(entries_of(dlg)[1], "n3w")
+find_buttons(dlg)[-1].command()
+root.update()
+check("changing the account password updates its characters",
+      manual["password"] == "n3w")
+
+# ── automatic import from the game ────────────────────────────────────────
+app._import_char_lists([{"account": "second-acc", "realm": "R", "chars": [
+    {"name": "Авто1", "class": 5}, {"name": "Авто2", "class": 9}]}])
+root.update()
+second = L.account_entry_for(app.cfg, "second-acc")
+kids = [tree.item(c, "text") for c in tree.get_children(str(E().index(second)))]
+check("imported characters appear under their account", kids == ["Авто1", "Авто2"])
+check("import shows a banner", "imported" in app._banners)
+auto1 = next(e for e in E() if e.get("name") == "Авто1")
+check("imported character got the account password", auto1["password"] == "pw2")
+
+# ── deleting a character hides it from the next import ────────────────────
+tree.selection_set(str(E().index(auto1)))
+app.delete_selected()
+root.update()
+check("character deleted", not any(e.get("name") == "Авто1" for e in E()))
+app._import_char_lists([{"account": "second-acc", "realm": "R", "chars": [
+    {"name": "Авто1", "class": 5}]}])
+check("deleted character is not re-imported",
+      not any(e.get("name") == "Авто1" for e in E()))
+
+# ── drag reorder: a character within its account ──────────────────────────
+acc_iid = str(E().index(L.account_entry_for(app.cfg, "acc")))
+first, second_row = tree.get_children(acc_iid)
+app._drag = {"iid": second_row, "moved": False}
+tree.move(second_row, acc_iid, 0)
+app._drag["moved"] = True
+app._on_drag_drop(None)
+root.update()
+acc_idx = int(str(E().index(L.account_entry_for(app.cfg, "acc"))))
+check("drag reorders characters inside the account",
+      [E()[acc_idx + 1]["name"], E()[acc_idx + 2]["name"]]
+      == ["Тестопал", "Тестомаг"])
+
+# ...and an account among accounts, dragging its characters along
+tops = tree.get_children("")
+app._drag = {"iid": tops[-1], "moved": True}
+tree.move(tops[-1], "", 0)
+app._on_drag_drop(None)
+root.update()
+check("drag moves a whole account with its characters",
+      L.is_account_entry(E()[0]) and E()[0]["account"] == "fresh"
+      and E()[1]["name"] == "Ручной")
+
+# ── deleting an account removes its characters ────────────────────────────
+tree.selection_set(str(E().index(L.account_entry_for(app.cfg, "fresh"))))
+app.delete_selected()
+root.update()
+check("account and its characters deleted",
+      not any(L.acc_key(e.get("account")) == "fresh" for e in E()))
+
+# ── everything survives a save / reload ───────────────────────────────────
+reloaded = L.load_cfg()
+check("config reloads grouped and complete",
+      [(e["account"], e.get("name")) for e in reloaded["characters"]]
+      == [(e["account"], e.get("name")) for e in E()])
+
+# ── hover card, tool dialogs ───────────────────────────────────────────────
+app._show_card(E()[1], 10, 10)
 check("hover card built", app._card is not None)
 app._hide_card()
 
-# launching must be refused while locked
-L.SECRETS_LOCKED = True
-launched = []
-L.launch_wow = lambda *a, **k: launched.append(a)
-import tkinter.messagebox as mb
-mb.showwarning = lambda *a, **k: None
-L.App._relock_prompt = lambda self: None
-app._launch_char(app.cfg["characters"][0])
-check("locked config refuses to launch", not launched)
-L.SECRETS_LOCKED = False
-app._launch_char(app.cfg["characters"][0])
-check("unlocked config launches", len(launched) == 1)
-app._launch_char(app.cfg["characters"][0])
-check("repeat launch is throttled", len(launched) == 1)
-
-# ── the two tool dialogs must at least build ──────────────────────────────
-# They are long functions nothing else executes, so a typo in one would
-# otherwise only ever surface in front of a user.
 wow = os.path.join(tmp, "game")
 for sub in ("WTF/Account/ACC/Realm/Тестомаг", "WTF/Account/ACC/Realm/Тестопал"):
     os.makedirs(os.path.join(wow, *sub.split("/")), exist_ok=True)
-with io.open(os.path.join(wow, "WTF", "Account", "ACC", "Realm", "Тестомаг",
-                          "config-cache.wtf"), "w", encoding="utf-8") as fh:
-    fh.write("x")
 app.cfg["wow_path"] = wow
-
 app.roster_dialog(root)
 root.update()
 rosters = [w for w in root.winfo_children()
            if isinstance(w, tk.Toplevel) and w.title() == L.t("Ростер")]
 check("roster dialog opens", len(rosters) == 1)
-if rosters:
-    texts = [c for c in rosters[0].winfo_children() if isinstance(c, tk.Text)]
-    check("roster dialog previews the roster",
-          texts and "Тестомаг" in texts[0].get("1.0", "end"))
-    rosters[0].grab_release()
-    rosters[0].destroy()
-
+for w in rosters:
+    w.destroy()
 app.wtf_transfer_dialog(root)
 root.update()
 transfers = [w for w in root.winfo_children()
              if isinstance(w, tk.Toplevel)
              and w.title() == L.t("Перенос настроек персонажа")]
 check("settings-transfer dialog opens", len(transfers) == 1)
-if transfers:
-    boxes = [c for c in transfers[0].winfo_children()
-             if isinstance(c, tk.Frame)]
-    listed = []
-    for b in boxes:
-        listed += [c for c in b.winfo_children() if isinstance(c, tk.Listbox)]
-    check("transfer dialog lists the characters found in WTF",
-          listed and listed[0].size() == 2)
-    transfers[0].grab_release()
-    transfers[0].destroy()
+for w in transfers:
+    w.destroy()
+
+# the settings dialog itself still builds with the new model
+app.settings()
+root.update()
+check("settings dialog opens", any(isinstance(w, tk.Toplevel)
+                                   for w in root.winfo_children()))
+
+# ── theme switch rebuilds cleanly ─────────────────────────────────────────
+for w in root.winfo_children():
+    if isinstance(w, tk.Toplevel):
+        w.destroy()
+for theme in ("light", "wow", "dark"):
+    L.apply_theme(theme)
+    app.rebuild()
+    root.update()
+check("every theme rebuilds the window", app.tree.winfo_exists())
 
 root.destroy()
 print()

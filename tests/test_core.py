@@ -27,9 +27,8 @@ L.save_cfg(cfg)
 check("save_cfg wrote the file", os.path.isfile(L.CONFIG_FILE))
 check("save_cfg left no .tmp", not os.path.isfile(L.CONFIG_FILE + ".tmp"))
 back = L.load_cfg()
-check("round-trip keeps the character",
-      back["characters"][0]["name"] == "Тест" and
-      back["characters"][0]["password"] == "p@ss")
+tchar = next((e for e in back["characters"] if e.get("name") == "Тест"), {})
+check("round-trip keeps the character", tchar.get("password") == "p@ss")
 
 # second save produces a .bak
 L.save_cfg(cfg)
@@ -40,7 +39,7 @@ with io.open(L.CONFIG_FILE, "w", encoding="utf-8") as f:
     f.write('{"characters": [{"name": "Те')
 rescued = L.load_cfg()
 check("corrupt config falls back to .bak",
-      rescued["characters"] and rescued["characters"][0]["name"] == "Тест")
+      any(e.get("name") == "Тест" for e in rescued["characters"]))
 
 # ── realmlist ──────────────────────────────────────────────────────────────
 wow = os.path.join(tmp, "wow")
