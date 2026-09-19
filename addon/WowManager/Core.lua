@@ -527,7 +527,7 @@ local function createAltsFrame()
 
     local hint = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     hint:SetPoint("TOP", 0, -32)
-    hint:SetText("Двойной клик по строке — зайти сразу")
+    hint:SetText("Двойной клик по строке - зайти сразу")
 
     local lfgBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
     lfgBtn:SetWidth(160); lfgBtn:SetHeight(24)
@@ -713,10 +713,10 @@ local function createMinimapButton()
     b:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
         GameTooltip:AddLine("WoW Manager")
-        GameTooltip:AddLine("ЛКМ — окно персонажей", 1, 1, 1)
-        GameTooltip:AddLine("ПКМ — быстрое меню перезахода", 1, 1, 1)
-        GameTooltip:AddLine("/wm lfg — поиск группы", 1, 1, 1)
-        GameTooltip:AddLine("Тащить — двигать кнопку", 1, 1, 1)
+        GameTooltip:AddLine("ЛКМ - окно персонажей", 1, 1, 1)
+        GameTooltip:AddLine("ПКМ - быстрое меню перезахода", 1, 1, 1)
+        GameTooltip:AddLine("/wm lfg - поиск группы", 1, 1, 1)
+        GameTooltip:AddLine("Тащить - двигать кнопку", 1, 1, 1)
         GameTooltip:Show()
     end)
     b:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -1125,7 +1125,7 @@ local function lfgRefresh()
             row.age:SetText(age < 60 and (age .. "с") or (math.floor(age / 60) .. "м"))
             row.raid:SetText(lfgRaidText(ad))
             row.roles:SetText(lfgRoles(ad))
-            local gs = ad.gs and tostring(ad.gs) or "—"
+            local gs = ad.gs and tostring(ad.gs) or "-"
             if ad.gs and ad.gs > mine then gs = "|cffff5050" .. gs .. "|r" end
             row.gs:SetText(gs)
             local c = ad.class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[ad.class]
@@ -1139,7 +1139,7 @@ local function lfgRefresh()
             row:Show()
         end
     end
-    lfgFrame.count:SetText(string.format("Объявлений: %d · мой ГС: %d", #list, mine))
+    lfgFrame.count:SetText(string.format("Объявлений: %d - мой ГС: %d", #list, mine))
 end
 
 local function lfgWhisper(ad)
@@ -1269,7 +1269,7 @@ local function createLfgFrame()
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
             GameTooltip:AddLine(self.ad.author)
             GameTooltip:AddLine(self.ad.text, 1, 1, 1, true)
-            GameTooltip:AddLine("Клик — шепнуть с «+ класс спек ГС»", 0.5, 0.8, 1)
+            GameTooltip:AddLine("Клик - шепнуть с «+ класс спек ГС»", 0.5, 0.8, 1)
             GameTooltip:Show()
         end)
         row:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -1320,6 +1320,61 @@ local function onLfgChat(msg, author, guid)
         PlaySound("TellMessage")
     end
     lfgRefresh()
+end
+
+
+
+-- ── harvest mode ────────────────────────────────────────────────────────────
+-- The manager can collect data for the whole roster by itself. It launches the
+-- account with a list of characters; this walks that list, collecting each one
+-- and switching to the next inside the client (no restart), then quits so the
+-- manager can move on to the next account. Only runs when asked to.
+
+local harvestStarted = false
+local harvestTimer = CreateFrame("Frame")
+harvestTimer:Hide()
+
+local function harvestSay(msg)
+    DEFAULT_CHAT_FRAME:AddMessage("|cffE3B341WoW Manager|r: " .. msg)
+end
+
+local function harvestNext()
+    local list = (WowManagerConfig and WowManagerConfig.harvestChars) or {}
+    local me = foldCase(UnitName("player") or "")
+    for i, name in ipairs(list) do
+        if foldCase(name) == me then return list[i + 1] end
+    end
+    for _, name in ipairs(list) do        -- not on the list: start at the top
+        if foldCase(name) ~= me then return name end
+    end
+end
+
+harvestTimer:SetScript("OnUpdate", function(self, elapsed)
+    self.left = (self.left or 0) - elapsed
+    if self.left > 0 then return end
+    self:Hide()
+    collect()
+    local nextName = harvestNext()
+    if nextName and type(WowManagerSwitchCharacter) == "function" then
+        harvestSay("data collected, moving on to " .. nextName)
+        WowManagerSwitchCharacter(nextName)
+        Logout()
+    else
+        harvestSay("account done, closing the game")
+        Quit()
+    end
+end)
+
+local function harvestStart()
+    if harvestStarted or not (WowManagerConfig and WowManagerConfig.harvest) then
+        return
+    end
+    harvestStarted = true
+    if RequestRaidInfo then RequestRaidInfo() end
+    if RequestTimePlayed then RequestTimePlayed() end
+    harvestTimer.left = tonumber(WowManagerConfig.harvestWait) or 12
+    harvestTimer:Show()
+    harvestSay("collecting data, don't touch the game")
 end
 
 
@@ -1376,6 +1431,7 @@ f:SetScript("OnEvent", function(self, event, arg1)
     elseif event == "PLAYER_ENTERING_WORLD" then
         collect()
         startDelayedCollect()         -- gold/currency arrive shortly after
+        harvestStart()
     elseif event == "FRIENDLIST_UPDATE" then
         syncList("friends")
     elseif event == "IGNORELIST_UPDATE" then

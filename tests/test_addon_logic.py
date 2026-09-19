@@ -80,6 +80,10 @@ function AddIgnore(n) table.insert(mine().ignore, n) end
 function DelIgnore(n) local l = mine().ignore
     for i = #l, 1, -1 do if l[i] == n then table.remove(l, i) end end end
 function GetItemInfo() return nil end
+QUIT, LOGGED_OUT, SWITCHED = false, false, nil
+function Quit() QUIT = true end
+function Logout() LOGGED_OUT = true end
+function WowManagerSwitchCharacter(n) SWITCHED = n end
 function GetInventoryItemLink() return nil end
 RAID_CLASS_COLORS = { MAGE = { r = 0.4, g = 0.8, b = 1 } }
 '''
@@ -90,7 +94,8 @@ return { parseLfg = parseLfg, lowerUtf8 = lowerUtf8, parseGS = parseGS,
          syncList = syncList, socialTicker = socialTicker,
          socialQueue = function() return socialQueue end,
          onLfgChat = onLfgChat, lfgEntries = lfgEntries,
-         socialRecheck = socialRecheck }
+         socialRecheck = socialRecheck, harvestTimer = harvestTimer,
+         events = f }
 '''
 
 L = lupa.LuaRuntime(unpack_returned_tuples=True)
@@ -258,6 +263,58 @@ for _ in range(5):
     lua.NOW = lua.NOW + 60
     login_sync("Alpha")
 check("a refused name is tried at most twice", attempts == 2)
+
+# ── harvest mode walks the account's characters ────────────────────────────
+def enter_world():
+    mod.events.scripts["OnEvent"](mod.events, "PLAYER_ENTERING_WORLD")
+
+
+def harvest_tick():
+    t = mod.harvestTimer
+    if t.shown:
+        t.scripts["OnUpdate"](t, 60.0)
+
+
+lua.WowManagerConfig = L.eval(
+    '{ syncFriends = false, lfg = false, harvest = true, harvestWait = 12,'
+    '  harvestChars = { "Alpha", "Beta", "Gamma" } }')
+
+# Switching characters reloads the addon, so each one is a fresh chunk.
+def session(name):
+    global mod
+    as_char(name)
+    lua.SWITCHED, lua.LOGGED_OUT, lua.QUIT = None, False, False
+    mod = L.execute(src + EXPORT)
+    return mod
+
+
+hm = session("Beta")
+enter_world()
+check("harvest waits before collecting", hm.harvestTimer.shown)
+check("nothing happens before the wait is over", lua.SWITCHED is None)
+harvest_tick()
+check("harvest moves on to the next character", lua.SWITCHED == "Gamma")
+check("...by logging out, not restarting", lua.LOGGED_OUT and not lua.QUIT)
+check("data was collected for this character",
+      lua.WowManagerDB["Realm.Beta"] is not None)
+
+hm = session("Gamma")
+enter_world()
+harvest_tick()
+check("the last character quits the game", lua.QUIT and lua.SWITCHED is None)
+
+# a character that isn't on the list starts the walk from the top
+hm = session("Delta")
+enter_world()
+harvest_tick()
+check("an unlisted character starts at the top", lua.SWITCHED == "Alpha")
+
+# and with harvest off nothing happens at all
+lua.WowManagerConfig = L.eval('{ syncFriends = false, lfg = false }')
+hm = session("Alpha")
+enter_world()
+check("harvest stays off unless the manager asks",
+      not hm.harvestTimer.shown and not lua.QUIT)
 
 print()
 bad = [n for n, v in ok if not v]

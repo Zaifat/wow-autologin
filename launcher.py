@@ -23,7 +23,7 @@ import webbrowser
 import zipfile
 from tkinter import filedialog, messagebox, ttk
 
-__version__ = "1.6.1"
+__version__ = "1.6.2"
 
 
 # Bail out immediately if a debugger is attached. This is a soft anti-RE
@@ -293,6 +293,37 @@ _EN = {
     "Общий список друзей и игнора для всех персонажей":
         "One friends and ignore list for all characters",
     "Поиск группы из чата (/wm lfg)": "Group finder from chat (/wm lfg)",
+    "Собирать персонажей при входе в аккаунт":
+        "Collect the account's characters when logging in",
+    "Собрать данные со всех персонажей…": "Collect data for every character…",
+    "Сбор данных": "Collecting data",
+    "Сбор данных со всех персонажей": "Collect data for every character",
+    "Менеджер сам зайдёт в каждый аккаунт и за каждого персонажа, соберёт "
+    "данные и закроет игру. Клиент запускается один раз на аккаунт — "
+    "персонажи переключаются внутри него.\nПока идёт сбор, не трогай игру.":
+        "The manager logs into every account and character, collects the data "
+        "and closes the game. The client starts once per account — characters "
+        "are switched inside it.\nLeave the game alone while it runs.",
+    "Аккаунтов: {a} · персонажей: {c} · примерно {m} мин":
+        "Accounts: {a} · characters: {c} · about {m} min",
+    "Готов к запуску": "Ready",
+    "Начать": "Start",
+    "Остановить": "Stop",
+    "Останавливаю…": "Stopping…",
+    "Остановлено.": "Stopped.",
+    "Сначала закрой запущенный WoW.": "Close the running WoW first.",
+    "Нет аккаунтов для сбора.": "There are no accounts to collect from.",
+    "Идёт сбор данных — дождись окончания.":
+        "Data collection is running — wait for it to finish.",
+    "Аккаунт {n} из {total}: {login}": "Account {n} of {total}: {login}",
+    "{login}: персонажей {c}": "{login}: {c} characters",
+    "  Через внешний лоадер сбор не работает.":
+        "  Collection doesn't work through an external loader.",
+    "  Список персонажей получен.": "  Character list received.",
+    "  Не уложился во время — закрываю клиент.":
+        "  Took too long — closing the client.",
+    "  Готово: {c}": "  Done: {c}",
+    "Собрано персонажей: {c}": "Characters collected: {c}",
     "Графика при запуске": "Graphics on launch",
     "Конструктор графики": "Graphics presets",
     "Конструктор графики…": "Graphics presets…",
@@ -575,7 +606,8 @@ def entry_summary(char):
     gold = rec.get("gold")
     if gold:
         bits.append(fmt_gold(gold))
-    return " · ".join(bits)
+    # Plain ASCII only: the game's font draws "·" and "—" as garbage.
+    return " - ".join(bits)
 
 
 def _ig_display(rec, key, long=False):
@@ -1154,6 +1186,8 @@ def _default_cfg():
         # "account|realm|name" of characters the user removed on purpose, so
         # the automatic import from the game doesn't bring them back.
         "hidden_chars":         [],
+        # logins whose row is folded in the list
+        "collapsed_accounts":   [],
         "theme":                "dark",    # "dark" | "light" | "wow"
         "lang":                 _detect_os_lang(),  # auto by OS on first run
         # Encrypt passwords / 2FA secrets at rest with Windows DPAPI (bound to
@@ -1172,6 +1206,7 @@ def _default_cfg():
         "graphics_presets":     {},      # id -> {"name":…, "cvars": {…}}
         "laa_patch":            True,    # 4GB flag on Wow.exe (never removed)
         "anti_afk":             False,   # keep the character from going AFK
+        "auto_import_chars":    True,    # add an account's characters on login
         "sync_friends":         True,    # one friends / ignore list for all alts
         "lfg":                  True,    # in-game group finder from chat
         "overlay":              False,   # in-game minimap relog button
@@ -1722,7 +1757,8 @@ def _lua_str(s):
 
 def deploy_addon(wow_dir, enabled, show_minimap, characters=None,
                  hover_card=True, card_fields=None, card_labels=None,
-                 current_account="", sync_friends=True, lfg=True):
+                 current_account="", sync_friends=True, lfg=True,
+                 harvest_chars=None, harvest_wait=12):
     """Copy the WowManager addon into the game (or remove it). Writes Config.lua
     with the minimap-overlay flag, the hover-card flag and the manager's
     character list — including each character's class colour and a snapshot of
@@ -1750,6 +1786,11 @@ def deploy_addon(wow_dir, enabled, show_minimap, characters=None,
                  "    currentAccount = %s," % _lua_str(current_account or ""),
                  "    syncFriends = %s," % ("true" if sync_friends else "false"),
                  "    lfg = %s," % ("true" if lfg else "false"),
+                 # harvest mode: the addon walks these characters by itself
+                 "    harvest = %s," % ("true" if harvest_chars else "false"),
+                 "    harvestWait = %d," % int(harvest_wait),
+                 "    harvestChars = { %s }," % ", ".join(
+                     _lua_str(n) for n in (harvest_chars or [])),
                  "    characters = {"]
         for c in (characters or []):
             nm = (c.get("name") or "").strip()
@@ -2839,7 +2880,7 @@ def _launch_via_loader(cfg, wow_dir, on_error=None):
     subprocess.Popen([path], cwd=loader_dir)
 
 
-def launch_wow(cfg, char, on_error=None):
+def launch_wow(cfg, char, on_error=None, harvest_chars=None):
     wow_dir = cfg.get("wow_path", "")
     exe = os.path.join(wow_dir, "Wow.exe")
     if not os.path.isfile(exe):
@@ -2863,7 +2904,8 @@ def launch_wow(cfg, char, on_error=None):
                  card_labels=cfg.get("card_labels"),
                  current_account=char.get("account", ""),
                  sync_friends=bool(cfg.get("sync_friends", True)),
-                 lfg=bool(cfg.get("lfg", True)))
+                 lfg=bool(cfg.get("lfg", True)),
+                 harvest_chars=harvest_chars)
 
     # Optional: snapshot WTF + AddOns in the background (throttled, ring-buffered)
     if cfg.get("backup_wtf"):
@@ -2890,7 +2932,7 @@ def launch_wow(cfg, char, on_error=None):
 
     if cfg.get("use_loader") and (cfg.get("loader_path") or "").strip():
         _launch_via_loader(cfg, wow_dir, on_error=on_error)
-        return
+        return None
 
     # Single source of truth for credentials = autologin.json, read by the
     # DLL. Passing them ALSO via argv used to cause a race: the argv path
@@ -2906,6 +2948,7 @@ def launch_wow(cfg, char, on_error=None):
             time.sleep(1.0)
             restore_config_cvars(wow_dir, snapshot)
         threading.Thread(target=_restore, daemon=True).start()
+    return proc
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -3177,6 +3220,8 @@ class App:
         self._card = None
         self._card_row = None
         self._last_launch = {}   # entry key -> time.monotonic() of last launch
+        self._harvesting = False
+        self._harvest_stop = False
         root.title(APP_TITLE)
         self._restore_geometry()
         root.bind_class("Toplevel", "<Map>", self._on_toplevel_map, add="+")
@@ -3555,8 +3600,6 @@ class App:
         FlatButton(header, t("Аккаунт"), icon="add", kind="primary",
                    command=lambda: self.account_dialog(None)
                    ).pack(side="left", padx=(0, 8))
-        FlatButton(header, t("Персонаж"), icon="add",
-                   command=self.add_character).pack(side="left", padx=(0, 8))
         self._btn_edit = FlatButton(header, icon="edit", padx=11,
                                     command=self.edit_selected)
         self._btn_edit.pack(side="left", padx=(0, 8))
@@ -3613,6 +3656,8 @@ class App:
         tree.bind("<F2>", lambda _e: self.edit_selected())
         tree.bind("<Button-3>", self._on_context)
         tree.bind("<<TreeviewSelect>>", lambda _e: self._update_actions())
+        tree.bind("<<TreeviewOpen>>", lambda e: self._on_fold(True, e))
+        tree.bind("<<TreeviewClose>>", lambda e: self._on_fold(False, e))
         self._drag = None
         tree.bind("<ButtonPress-1>", self._on_drag_start)
         tree.bind("<B1-Motion>", self._on_drag_motion)
@@ -3811,9 +3856,12 @@ class App:
                 label = "  %s   ·   %s" % (
                     acc.get("account", ""),
                     len(chars) if chars else t("ждёт первого входа"))
+                collapsed = acc_key(acc.get("account")) in (
+                    self.cfg.get("collapsed_accounts") or [])
                 tree.insert("", "end", iid=parent, text=label,
                             values=self._account_values(acc, chars),
-                            open=True if q else opened.get(parent, True),
+                            open=True if q else opened.get(parent,
+                                                           not collapsed),
                             tags=("account",))
             for idx, c in shown:
                 # Realm status belongs to the account row; repeating it on
@@ -3879,14 +3927,38 @@ class App:
                 b.set_enabled(has)
 
     def _on_double(self, e):
+        """Double-click launches — including account rows. Folding is what the
+        arrow on the left is for, so ttk's own double-click toggle is
+        suppressed here."""
         iid = self.tree.identify_row(e.y)
         if not iid or iid == "orphans":
-            return
-        entry = self.cfg["characters"][int(iid)]
-        if is_account_entry(entry) and self.tree.get_children(iid):
-            return              # the tree's own double-click folds it
-        self._launch_char(entry)
+            return "break"
+        if self.tree.identify_element(e.x, e.y) == "Treeitem.indicator":
+            return              # let the arrow fold the account
+        self._launch_char(self.cfg["characters"][int(iid)])
         return "break"
+
+    def _on_fold(self, opened, e=None):
+        """Remember which accounts are collapsed."""
+        iid = self.tree.focus() or (self.tree.selection() or ("",))[0]
+        if not iid or iid == "orphans":
+            return
+        try:
+            entry = self.cfg["characters"][int(iid)]
+        except (ValueError, IndexError):
+            return
+        key = acc_key(entry.get("account"))
+        try:                       # keep the row itself in step with the state
+            self.tree.item(iid, open=bool(opened))
+        except tk.TclError:
+            pass
+        collapsed = [k for k in (self.cfg.get("collapsed_accounts") or [])
+                     if k != key]
+        if not opened:
+            collapsed.append(key)
+        if collapsed != (self.cfg.get("collapsed_accounts") or []):
+            self.cfg["collapsed_accounts"] = collapsed
+            save_cfg(self.cfg)
 
     def _on_context(self, e):
         iid = self.tree.identify_row(e.y)
@@ -3901,9 +3973,6 @@ class App:
         if is_account_entry(entry):
             m.add_command(label=t("Войти в аккаунт"),
                           command=lambda: self._launch_char(entry))
-            m.add_command(label=t("Добавить персонажа"),
-                          command=lambda: self.char_dialog(
-                              None, account=entry.get("account")))
             m.add_separator()
             m.add_command(label=t("Изменить аккаунт"),
                           command=lambda: self.account_dialog(idx))
@@ -4061,14 +4130,6 @@ class App:
         _idx, entry = self.selected_entry()
         if entry is not None:
             self._launch_char(entry)
-
-    def add_character(self):
-        _idx, entry = self.selected_entry()
-        account = entry.get("account") if entry else None
-        if not any(is_account_entry(e) for e in self.cfg.get("characters", [])):
-            self.account_dialog(None)
-            return
-        self.char_dialog(None, account=account)
 
     def edit_selected(self):
         idx, entry = self.selected_entry()
@@ -4285,20 +4346,19 @@ class App:
         self._fit_dialog(dlg, 440)
         dlg.grab_set()
 
-    def char_dialog(self, idx, account=None):
-        editing = idx is not None
-        ch = self.cfg["characters"][idx] if editing else {}
+    def char_dialog(self, idx):
+        """Edit a character. Characters themselves come from the game — the
+        patch reports the account's roster on the first login."""
+        ch = self.cfg["characters"][idx]
         logins = [e.get("account", "") for e in self.cfg.get("characters", [])
                   if is_account_entry(e)]
-        if not logins:
-            self.account_dialog(None)
-            return
-        start_acc = ch.get("account") or account or logins[0]
+        start_acc = ch.get("account") or (logins[0] if logins else "")
         start_acc = next((l for l in logins if acc_key(l) == acc_key(start_acc)),
-                         logins[0])
+                         start_acc)
         acc_entry = account_entry_for(self.cfg, start_acc) or {}
 
         dlg = self._dialog(t("Персонаж"))
+        editing = True
         name_var = tk.StringVar(value=ch.get("name", ""))
         acc_var = tk.StringVar(value=start_acc)
         stored = ch.get("class", "")
@@ -4377,6 +4437,8 @@ class App:
     def _check_char_lists(self):
         """Called from the watcher thread: notice new list files cheaply and
         hand the actual import to the UI thread."""
+        if not self.cfg.get("auto_import_chars", True):
+            return
         wow = self.cfg.get("wow_path", "")
         sig = charlist_signature(wow)
         if sig and sig != getattr(self, "_charlist_sig", None):
@@ -4385,9 +4447,11 @@ class App:
             self.root.after(0, lambda: self._import_char_lists(lists))
 
     def _import_char_lists(self, lists):
+        if not self.cfg.get("auto_import_chars", True):
+            return []
         added = import_char_lists(self.cfg, lists)
         if not added:
-            return
+            return added
         save_cfg(self.cfg)
         self.render_rows()
         shown = ", ".join(added[:6]) + ("…" if len(added) > 6 else "")
@@ -4395,6 +4459,7 @@ class App:
                          t("Добавлены персонажи ({n}): {names}").format(
                              n=len(added), names=shown),
                          accent=ACCENT)
+        return added
 
     # ── kept from the previous window ─────────────────────────────────────
 
@@ -4610,6 +4675,10 @@ class App:
         self.root.after(0, lambda m=msg: messagebox.showerror(APP_TITLE, m))
 
     def _launch_char(self, char):
+        if getattr(self, "_harvesting", False):
+            messagebox.showinfo(APP_TITLE, t("Идёт сбор данных — дождись "
+                                             "окончания."))
+            return
         if SECRETS_LOCKED:
             messagebox.showwarning(
                 APP_TITLE,
@@ -5425,6 +5494,176 @@ class App:
         self._fit_dialog(dlg, 700)
         dlg.grab_set()
 
+    # ── collecting data for the whole roster ────────────────────────────────
+
+    def harvest_plan(self):
+        """[(account entry, [character entries])] — what a run would visit."""
+        return [(acc, [c for _i, c in chars])
+                for _ai, acc, chars in roster_groups(self.cfg)
+                if acc is not None]
+
+    def harvest_dialog(self, parent):
+        """Walk every account and character once, so gold / GS / lockouts are
+        filled in for the whole roster. One client launch per account: the
+        addon switches characters inside the client and closes the game when
+        the account is done."""
+        plan = self.harvest_plan()
+        chars_total = sum(len(c) for _a, c in plan)
+        dlg = tk.Toplevel(parent)
+        dlg.title(t("Сбор данных"))
+        dlg.configure(bg=BG)
+        dlg.transient(parent)
+
+        tk.Label(dlg, text=t("Сбор данных со всех персонажей"), bg=BG, fg=TEXT,
+                 font=font(14, "bold")).pack(padx=20, pady=(16, 4), anchor="w")
+        tk.Label(dlg, text=t("Менеджер сам зайдёт в каждый аккаунт и за "
+                             "каждого персонажа, соберёт данные и закроет "
+                             "игру. Клиент запускается один раз на аккаунт — "
+                             "персонажи переключаются внутри него.\n"
+                             "Пока идёт сбор, не трогай игру."),
+                 bg=BG, fg=MUTED, font=font(9), justify="left", anchor="w",
+                 wraplength=520).pack(fill="x", padx=20)
+
+        minutes = max(1, int((len(plan) * 45 + chars_total * 40) / 60))
+        tk.Label(dlg, text=t("Аккаунтов: {a} · персонажей: {c} · примерно "
+                             "{m} мин").format(a=len(plan), c=chars_total,
+                                               m=minutes),
+                 bg=BG, fg=ACCENT, font=font(10, "bold"), anchor="w"
+                 ).pack(fill="x", padx=20, pady=(10, 0))
+
+        status_var = tk.StringVar(value=t("Готов к запуску"))
+        tk.Label(dlg, textvariable=status_var, bg=BG, fg=TEXT, font=font(10),
+                 anchor="w").pack(fill="x", padx=20, pady=(10, 2))
+        log = tk.Text(dlg, height=12, bg=ENTRY_BG, fg=TEXT, relief="flat",
+                      highlightthickness=1, highlightbackground=BORDER,
+                      font=font(9), wrap="word")
+        log.pack(fill="both", expand=True, padx=20)
+
+        row = tk.Frame(dlg, bg=BG)
+        row.pack(fill="x", padx=20, pady=(12, 16))
+        start_btn = FlatButton(row, t("Начать"), kind="primary")
+        start_btn.pack(side="left")
+        stop_btn = FlatButton(row, t("Остановить"))
+        stop_btn.pack(side="left", padx=(8, 0))
+        stop_btn.set_enabled(False)
+        close_btn = FlatButton(row, t("Закрыть"), command=dlg.destroy)
+        close_btn.pack(side="right")
+
+        def say(line):
+            log.insert("end", line + "\n")
+            log.see("end")
+
+        def finish():
+            self._harvesting = False
+            start_btn.set_enabled(True)
+            stop_btn.set_enabled(False)
+            close_btn.set_enabled(True)
+            status_var.set(t("Готово"))
+            self._refresh_ingame()
+
+        def start():
+            if is_wow_running():
+                messagebox.showwarning(
+                    APP_TITLE, t("Сначала закрой запущенный WoW."), parent=dlg)
+                return
+            if not plan:
+                messagebox.showinfo(APP_TITLE, t("Нет аккаунтов для сбора."),
+                                    parent=dlg)
+                return
+            if SECRETS_LOCKED:
+                self._relock_prompt()
+                return
+            self._harvest_stop = False
+            self._harvesting = True
+            start_btn.set_enabled(False)
+            stop_btn.set_enabled(True)
+            close_btn.set_enabled(False)
+            log.delete("1.0", "end")
+            threading.Thread(
+                target=self._harvest_worker,
+                args=(plan, lambda *a: self.root.after(0, say, *a),
+                      lambda *a: self.root.after(0, status_var.set, *a),
+                      lambda: self.root.after(0, finish)),
+                daemon=True).start()
+
+        def stop():
+            self._harvest_stop = True
+            status_var.set(t("Останавливаю…"))
+
+        start_btn.command = start
+        stop_btn.command = stop
+        dlg.protocol("WM_DELETE_WINDOW",
+                     lambda: None if self._harvesting else dlg.destroy())
+        self._fit_dialog(dlg, 580)
+        dlg.grab_set()
+
+    def _harvest_worker(self, plan, say, status, done):
+        """Runs off the UI thread: one client launch per account."""
+        wow = self.cfg.get("wow_path", "")
+        collected = 0
+        try:
+            for n, (acc, chars) in enumerate(plan, 1):
+                if self._harvest_stop:
+                    say(t("Остановлено."))
+                    break
+                names = [c.get("name", "") for c in chars if c.get("name")]
+                login = acc.get("account", "")
+                status(t("Аккаунт {n} из {total}: {login}").format(
+                    n=n, total=len(plan), login=login))
+                say(t("{login}: персонажей {c}").format(login=login,
+                                                        c=len(names)))
+                target = dict(chars[0]) if chars else acc
+                before = charlist_signature(wow)
+                try:
+                    proc = launch_wow(self.cfg, target, harvest_chars=names)
+                except Exception as e:                  # noqa: BLE001
+                    say("  " + str(e))
+                    continue
+                if proc is None:
+                    say(t("  Через внешний лоадер сбор не работает."))
+                    break
+                # Accounts with no characters yet only need the roster file.
+                deadline = time.time() + (90 + 70 * len(names) if names else 90)
+                while time.time() < deadline and not self._harvest_stop:
+                    if proc.poll() is not None:
+                        break
+                    if not names and charlist_signature(wow) != before:
+                        say(t("  Список персонажей получен."))
+                        break
+                    time.sleep(1)
+                if proc.poll() is None:
+                    if not self._harvest_stop and names:
+                        say(t("  Не уложился во время — закрываю клиент."))
+                    try:
+                        proc.terminate()
+                    except OSError:
+                        pass
+                    for _ in range(20):
+                        if proc.poll() is not None:
+                            break
+                        time.sleep(0.5)
+                time.sleep(2)               # let the client flush its files
+                self.root.after(0, self._refresh_ingame)
+                if self.cfg.get("auto_import_chars", True):
+                    lists = read_char_lists(wow)
+                    self.root.after(0, lambda l=lists: self._import_char_lists(l))
+                collected += len(names)
+                say(t("  Готово: {c}").format(c=len(names) or "-"))
+        finally:
+            # drop harvest mode from the addon config again
+            try:
+                deploy_addon(wow, bool(self.cfg.get("hover_card", True)
+                                       or self.cfg.get("overlay", False)),
+                             show_minimap=bool(self.cfg.get("overlay", False)),
+                             characters=self.cfg.get("characters", []),
+                             hover_card=bool(self.cfg.get("hover_card", True)),
+                             card_fields=self.cfg.get("card_fields"),
+                             card_labels=self.cfg.get("card_labels"))
+            except Exception:
+                pass
+            say(t("Собрано персонажей: {c}").format(c=collected))
+            done()
+
     def backup_settings(self, parent):
         dlg = tk.Toplevel(parent)
         dlg.title(t("Настройки бэкапа"))
@@ -5848,10 +6087,16 @@ class App:
             font=("Segoe UI", 9), anchor="w"
         ).pack(fill="x", padx=18, pady=(2, 0))
 
-        tk.Button(body, text=t("Конструктор графики…"), bg=BTN_BG, fg=TEXT,
+        gbtns = tk.Frame(body, bg=BG)
+        gbtns.pack(anchor="w", padx=22, pady=(6, 0))
+        tk.Button(gbtns, text=t("Конструктор графики…"), bg=BTN_BG, fg=TEXT,
                   relief="flat", padx=10, pady=2,
                   command=lambda: self.graphics_constructor(dlg)
-                  ).pack(anchor="w", padx=22, pady=(6, 0))
+                  ).pack(side="left")
+        tk.Button(gbtns, text=t("Собрать данные со всех персонажей…"),
+                  bg=BTN_BG, fg=TEXT, relief="flat", padx=10, pady=2,
+                  command=lambda: self.harvest_dialog(dlg)
+                  ).pack(side="left", padx=(8, 0))
 
         # ── External loader (checkbox + Configure) ───────────────────────────
         loader_var = tk.BooleanVar(value=bool(self.cfg.get("use_loader", False)))
@@ -5883,6 +6128,8 @@ class App:
                  anchor="w").pack(fill="x", padx=20, pady=(10, 0))
         game_vars = {}
         for key, label, default in (
+                ("auto_import_chars",
+                 "Собирать персонажей при входе в аккаунт", True),
                 ("laa_patch", "Патч «4 ГБ памяти» для Wow.exe — меньше вылетов "
                               "в ЦЛК и на БГ", True),
                 ("anti_afk", "Анти-АФК: персонаж не уходит в «Отошёл» и не "

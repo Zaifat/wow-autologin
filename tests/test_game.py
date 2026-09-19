@@ -204,6 +204,84 @@ check("no anti-AFK key when it is off", "antiafk" not in seen_json)
 check("no cvar_ keys without a preset",
       not any(k.startswith("cvar_") for k in seen_json))
 
+# ── harvest: one launch per account, driven by the addon ──────────────────
+class HarvestApp:
+    """Just enough of App for _harvest_worker."""
+    cfg = None
+    _harvest_stop = False
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.root = type("R", (), {"after": staticmethod(
+            lambda _d, fn=None, *a: fn(*a) if fn else None)})()
+
+    _refresh_ingame = lambda self: None
+    _import_char_lists = lambda self, lists: None
+
+
+harvest_cfg = L._default_cfg()
+harvest_cfg.update({"wow_path": wow2, "characters": [
+    {"name": "", "account": "acc", "password": "pw", "realm": "R",
+     "realmlist": "logon.x"},
+    {"name": "Один", "account": "acc", "password": "pw", "realm": "R"},
+    {"name": "Два", "account": "acc", "password": "pw", "realm": "R"},
+    {"name": "", "account": "empty-acc", "password": "pw", "realm": "R",
+     "realmlist": "logon.x"}]})
+L.normalize_roster(harvest_cfg)
+launches = []
+
+
+class HarvestProc:
+    def __init__(self, alive=1):
+        self.alive = alive
+        self.killed = False
+
+    def poll(self):
+        self.alive -= 1
+        return None if self.alive > 0 else 0
+
+    def terminate(self):
+        self.killed = True
+        self.alive = 0
+
+
+procs = []
+
+
+def fake_launch(cfg, char, on_error=None, harvest_chars=None):
+    launches.append((char.get("name") or char.get("account"), harvest_chars))
+    procs.append(HarvestProc())
+    return procs[-1]
+
+
+L.launch_wow = fake_launch
+addon_calls = []
+L.deploy_addon = lambda *a, **k: addon_calls.append(k)
+app = HarvestApp(harvest_cfg)
+lines = []
+L.App._harvest_worker(app, [(harvest_cfg["characters"][0],
+                             harvest_cfg["characters"][1:3]),
+                            (harvest_cfg["characters"][3], [])],
+                      lines.append, lambda *a: None, lambda: None)
+check("one launch per account", len(launches) == 2)
+check("the run starts at the account's first character",
+      launches[0][0] == "Один")
+check("the addon gets the whole character list",
+      launches[0][1] == ["Один", "Два"])
+check("an account with no characters is visited too",
+      launches[1][0] == "empty-acc" and launches[1][1] == [])
+check("harvest mode is switched off afterwards",
+      addon_calls and not addon_calls[-1].get("harvest_chars"))
+check("the run is reported", any("acc" in ln for ln in lines))
+
+# stop button
+launches.clear()
+app._harvest_stop = True
+L.App._harvest_worker(app, [(harvest_cfg["characters"][0],
+                             harvest_cfg["characters"][1:3])],
+                      lines.append, lambda *a: None, lambda: None)
+check("stop prevents any launch", not launches)
+
 # ── Config.lua carries the new addon flags ────────────────────────────────
 spec2 = importlib.util.spec_from_file_location("launcher2", os.path.abspath("launcher.py"))
 L2 = importlib.util.module_from_spec(spec2)
@@ -214,6 +292,14 @@ conf_lua = io.open(os.path.join(wow2, "Interface", "AddOns", "WowManager",
                                 "Config.lua"), encoding="utf-8").read()
 check("Config.lua has syncFriends and lfg",
       "syncFriends = false" in conf_lua and "lfg = true" in conf_lua)
+check("harvest is off by default", "harvest = false" in conf_lua)
+L2.deploy_addon(wow2, True, True, characters=[],
+                harvest_chars=["Один", "Два"], harvest_wait=9)
+conf_lua = io.open(os.path.join(wow2, "Interface", "AddOns", "WowManager",
+                                "Config.lua"), encoding="utf-8").read()
+check("harvest list reaches the addon",
+      "harvest = true" in conf_lua and "harvestWait = 9" in conf_lua
+      and '"Один", "Два"' in conf_lua)
 
 print()
 bad = [n for n, v in ok if not v]

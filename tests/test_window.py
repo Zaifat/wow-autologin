@@ -203,19 +203,26 @@ check("duplicate login is refused",
       sum(1 for e in E() if L.acc_key(e.get("account")) == "fresh") == 1)
 dlg.destroy()
 
-# ── add a character by hand, under that account ───────────────────────────
-app.char_dialog(None, account="fresh")
-root.update()
-dlg = last_dialog()
-type_into(entries_of(dlg)[0], "Ручной")
-find_buttons(dlg)[-1].command()
+# ── characters come from the game; the dialog only edits them ────────────
+check("no manual add-character entry point",
+      not hasattr(app, "add_character"))
+app._import_char_lists([{"account": "fresh", "realm": "R",
+                         "chars": [{"name": "Ручной", "class": 8}]}])
 root.update()
 manual = next((e for e in E() if e.get("name") == "Ручной"), None)
-check("character dialog adds the character", manual is not None)
+check("the imported character appears", manual is not None)
 check("the character inherits the account password",
       manual and manual["password"] == "s3cret")
 check("the character sits right under its account",
       manual and E().index(manual) == E().index(fresh) + 1)
+app.char_dialog(E().index(manual))
+root.update()
+dlg = last_dialog()
+type_into(entries_of(dlg)[0], "Переименован")
+find_buttons(dlg)[-1].command()
+root.update()
+manual = next((e for e in E() if e.get("name") == "Переименован"), None)
+check("the character dialog saves an edit", manual is not None)
 
 # ── editing the account password flows to its characters ─────────────────
 app.account_dialog(E().index(fresh))
@@ -238,6 +245,14 @@ check("import shows a banner", "imported" in app._banners)
 auto1 = next(e for e in E() if e.get("name") == "Авто1")
 check("imported character got the account password", auto1["password"] == "pw2")
 
+# ── the roster import can be switched off ─────────────────────────────────
+app.cfg["auto_import_chars"] = False
+app._import_char_lists([{"account": "second-acc", "realm": "R",
+                         "chars": [{"name": "Нежданный", "class": 1}]}])
+check("nothing is imported while the switch is off",
+      not any(e.get("name") == "Нежданный" for e in E()))
+app.cfg["auto_import_chars"] = True
+
 # ── deleting a character hides it from the next import ────────────────────
 tree.selection_set(str(E().index(auto1)))
 app.delete_selected()
@@ -247,6 +262,44 @@ app._import_char_lists([{"account": "second-acc", "realm": "R", "chars": [
     {"name": "Авто1", "class": 5}]}])
 check("deleted character is not re-imported",
       not any(e.get("name") == "Авто1" for e in E()))
+
+# ── folding an account is remembered; double-click launches it ───────────
+acc_row = str(E().index(L.account_entry_for(app.cfg, "acc")))
+tree.item(acc_row, open=False)
+tree.focus(acc_row)
+app._on_fold(False)
+check("a folded account is recorded",
+      "acc" in (app.cfg.get("collapsed_accounts") or []))
+app.render_rows()
+root.update()
+acc_row = str(E().index(L.account_entry_for(app.cfg, "acc")))
+check("...and stays folded after a redraw", not tree.item(acc_row, "open"))
+check("the folded state survives a reload",
+      "acc" in (L.load_cfg().get("collapsed_accounts") or []))
+tree.focus(acc_row)
+app._on_fold(True)
+app.render_rows()
+root.update()
+acc_row = str(E().index(L.account_entry_for(app.cfg, "acc")))
+check("unfolding is recorded too",
+      "acc" not in (app.cfg.get("collapsed_accounts") or [])
+      and tree.item(acc_row, "open"))
+
+launched.clear()
+app._last_launch.clear()
+
+
+class FakeClick:
+    def __init__(self, iid, indicator=False):
+        box = tree.bbox(iid)
+        self.x = 12 if indicator else (box[0] + box[2] - 10 if box else 200)
+        self.y = (box[1] + 2) if box else 10
+
+
+tree.selection_set(acc_row)
+res = app._on_double(FakeClick(acc_row))
+check("double-click on an account row launches it",
+      launched == ["acc"] and res == "break")
 
 # ── drag reorder: a character within its account ──────────────────────────
 acc_iid = str(E().index(L.account_entry_for(app.cfg, "acc")))
@@ -269,7 +322,7 @@ app._on_drag_drop(None)
 root.update()
 check("drag moves a whole account with its characters",
       L.is_account_entry(E()[0]) and E()[0]["account"] == "fresh"
-      and E()[1]["name"] == "Ручной")
+      and E()[1]["name"] == "Переименован")
 
 # ── deleting an account removes its characters ────────────────────────────
 tree.selection_set(str(E().index(L.account_entry_for(app.cfg, "fresh"))))

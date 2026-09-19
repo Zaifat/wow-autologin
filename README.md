@@ -14,7 +14,8 @@ One-click login for World of Warcraft 3.3.5a (WotLK). Pick a character — the c
 - **Your whole roster at a glance** — gold, GS, level, weekly dailies, arena games, raid lockouts, professions
 - **Group finder** — raid ads from chat sorted by raid, size, roles and GS; one click to whisper (`/wm lfg`)
 - **Shared friends & ignore list** — add a friend once, every character has them
-- **Client tweaks** — 4 GB patch, anti-AFK, per-character graphics presets (a muted low-spec mode for alt windows)
+- **Client tweaks** — 4 GB patch, anti-AFK, graphics presets you build yourself
+- **Collect everything at once** — the manager walks every account and character and fills the table in
 - **2FA** — Google Authenticator, 2FAS, Yandex Key
 - **Passwords encrypted** — with the Windows key, or a master password for a portable config
 - **Tools** — realm ping, desktop shortcuts, guild-forum roster export, copy UI settings between characters, WTF backups
