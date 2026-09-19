@@ -1,95 +1,43 @@
-# Менеджер персонажей WOW 3.3.5a
-<img width="877" height="615" alt="image" src="https://github.com/user-attachments/assets/11529358-1002-4aa5-8403-73f78d0f4597" />
+# WoW 3.3.5a Character Manager
 
- 
-Лаунчер для World of Warcraft 3.3.5a (WotLK). Выбираешь персонажа — клиент сам вводит логин, пароль, реалм, заходит в игру и подтверждает 2FA-код. А встроенный аддон собирает данные персонажей прямо из игры и даёт сменить персонажа, не выходя из клиента.
+**English** · [Русский](README.ru.md)
 
-## Возможности
+One-click login for World of Warcraft 3.3.5a (WotLK). Pick a character — the client enters your login, password and 2FA code, selects the realm and walks into the world by itself.
 
-- **Автологин в один клик** — логин, пароль, реалм и 2FA-код подставляются сами
-- **2FA** — Google Authenticator, 2FAS, Яндекс.Ключ; код вводится автоматически
-- **Персонажи и аккаунты** — две отдельные таблицы; можно добавить аккаунт без персонажа
-- **Настройка таблицы и карточки** — сам выбираешь, какие данные показывать; порядок записей и столбцов меняется перетаскиванием, размер окна запоминается
-- **Карточка по наведению** — голд, ГС, валюта, рейд-локауты, профессии, гильдия, зона и др. (данные собирает аддон в игре)
-- **Аддон в игре** — кнопка у миникарты: ЛКМ открывает окно со всеми персонажами (данные, цвета классов, заход в один клик), ПКМ — быстрое меню перезахода. Окно открывается и командой `/wm`
-- **Смена персонажа без перезапуска клиента** — если персонаж на том же аккаунте и реалме, клиент просто выходит в выбор персонажа, а патч сам заходит за нового. Перезапуск нужен только при смене аккаунта
-- **Недельный прогресс** — дейлики (с таймером сброса), игры на арене за неделю, готовые несданные квесты, рейд-локауты — по каждому персонажу
-- **Статус реалма** — пинг logon-сервера прямо в таблице, видно до клика
-- **Сводка по всем персонажам** — суммарное золото, лучший ГС, общее наигранное время
-- **Ярлыки на рабочий стол** — для любого персонажа или аккаунта, запуск одним кликом
-- **Ростер для форума** — вся таблица персонажей в текст, BBCode или Markdown, в буфер или в файл
-- **Перенос настроек персонажа** — интерфейс, бинды, список аддонов, макросы и SavedVariables с одного персонажа на других, с бэкапом перед этим
-- **Несколько аккаунтов**, у каждого свой логин/пароль/реалм
-- **Поиск, сортировка, подсветка по классам**
-- **Тёмная и светлая темы**, английский язык
-- **Шифрование паролей** — ключом Windows (DPAPI) либо мастер-паролем, с которым конфиг можно носить на флешке
-- **Авто-бэкап** папок `WTF` и аддонов перед запуском
-- **Трей, один экземпляр, автообновление** из релизов
-- **Кириллица в нике** работает корректно
-- **Установщик** с ярлыком в Пуске и автозапуском Windows
+![Character Manager](docs/screenshot.png)
 
-<img width="896" height="806" alt="image" src="https://github.com/user-attachments/assets/ffffc9d9-36b9-4ea7-bbcb-bffae1ecfd8d" />
+## Features
 
+- **One-click login** — login, password, realm, character and 2FA code, all automatic
+- **Accounts with their characters** — add an account once; its characters are picked up on the first login
+- **Switch characters without restarting** — from the in-game window or the minimap button (`/wm`)
+- **Your whole roster at a glance** — gold, GS, level, weekly dailies, arena games, raid lockouts, professions
+- **2FA** — Google Authenticator, 2FAS, Yandex Key
+- **Passwords encrypted** — with the Windows key, or a master password for a portable config
+- **Tools** — realm ping, desktop shortcuts, guild-forum roster export, copy UI settings between characters, WTF backups
 
-## Использование
+## Get started
 
-1. Скачать `Manager_WOW.exe` из [Releases](../../releases) — это установщик
-2. Установить (по умолчанию в `Program Files\WowManager`, можно выбрать другую папку) → запустить
-3. «Настройки» → указать путь к папке с `Wow.exe`
-4. «Добавить» → заполнить ник (или оставить пустым для записи-аккаунта), логин, пароль, класс, реалм, realmlist, при необходимости — секрет 2FA
-5. Двойной клик по записи → автозаход
+1. Download `Manager_WOW.exe` from [Releases](../../releases) and install it.
+2. **Settings** → point it at the folder with `Wow.exe`.
+3. **+ Account** → login and password. Double-click the account to log in — its characters appear on their own.
 
-Конфиг хранится рядом с программой (`characters.json`), а если папка программы недоступна для записи — в `%LOCALAPPDATA%\АвтологинWOW\`. Пароли и 2FA-секреты по умолчанию зашифрованы DPAPI — ключом Windows, привязанным к этому ПК и этой учётке.
+## How it works
 
-В «Настройках» вместо DPAPI можно выбрать **мастер-пароль**: тогда конфиг переносится на любой другой компьютер, но без пароля бесполезен. Пароль спрашивается один раз при запуске менеджера. Восстановления нет — забыл пароль, значит пароли от аккаунтов придётся вводить заново.
+The manager patches `Wow.exe` to load `AwesomeWotlkLib.dll` (based on [awesome_wotlk](https://github.com/FrostAtom/awesome_wotlk)). On launch it writes the login details to `autologin.json`; the DLL reads the file, deletes it at once and drives the login screen. A bundled addon collects character data and adds the in-game window.
 
-<img width="878" height="614" alt="image" src="https://github.com/user-attachments/assets/a5939f8d-11dd-42a1-9f89-e8cc3cb3f637" />
+Works with any 3.3.5a (build 12340) server. WoWCircle is preconfigured.
 
+## Build
 
-## Поддерживаемые серверы
-
-Из коробки настроен на WoWCircle (по умолчанию `logon.wowcircle.me`, запасной — `logon.wowcircle.com`). Список реалмов и realmlist-серверов редактируется в Настройках.
-
-Технически работает с любым 3.3.5a-сервером, где клиент тот же `Wow.exe build 12340` и серверная сторона принимает стандартный поток автологина. Параметры передаются в Wow.exe через файл `autologin.json`, который патч `AwesomeWotlkLib.dll` читает при старте клиента (поля: `login`, `password`, `realmlist`, `realmname`, `character`, опционально `totp_secret`).
-
-2FA должна реализовывать `TokenEnterDialog` GlueXML или вызов Lua `AcceptToken_AccountLogin`.
-
-## Сборка из исходников
-
-Нужен Python 3.10+, Visual Studio 2022 с Desktop development with C++ (для clang-cl) и [Inno Setup 6](https://jrsoftware.org/isdl.php).
+Python 3.10+, Visual Studio 2022 (C++), [Inno Setup 6](https://jrsoftware.org/isdl.php):
 
 ```bat
 build.bat
 ```
 
-Это поставит зависимости (Nuitka, zstandard, pefile, pystray, Pillow), скомпилирует `launcher.py` в standalone-сборку и упакует её в установщик через Inno Setup. Готовый артефакт — `dist\installer\Manager_WOW.exe`. Первая сборка может занять 5-10 минут (Nuitka подкачает MinGW/clang при необходимости).
+Tests: `python tests/run_all.py`
 
-DLL `AwesomeWotlkLib.dll` уже собран и лежит в репозитории. Если хочешь пересобрать его сам — открой `awesome_wotlk_src/build_x86/Project.sln` в Visual Studio 2022 либо собери из командной строки:
+## License
 
-```bat
-call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars32.bat"
-cmake -S awesome_wotlk_src -B awesome_wotlk_src\out\build\x86-Release -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build awesome_wotlk_src\out\build\x86-Release
-```
-
-Готовая DLL окажется в `awesome_wotlk_src\build\Release\` — её надо скопировать в корень репозитория, оттуда её забирает сборка лаунчера.
-
-## Тесты
-
-```bash
-python tests/run_all.py
-```
-
-Проверяют конфиг, шифрование, TOTP, парсер SavedVariables, IPC, сборку окна и синтаксис Lua аддона. Для Lua-тестов нужен `pip install lupa`, без него они пропускаются.
-
-## Благодарности
-
-- [FrostAtom/awesome_wotlk](https://github.com/FrostAtom/awesome_wotlk) — оригинальный AwesomeWotlk-патч, на котором основан DLL
-
-## Связь
-
-Telegram: [@Zaifat](https://t.me/Zaifat)
-
-## Лицензия
-
-MIT
+MIT · [@Zaifat](https://t.me/Zaifat)
