@@ -283,6 +283,22 @@ _EN = {
     "Пароли заблокированы — мастер-пароль не введён.":
         "Passwords are locked — no master password was entered.",
     "Ввести пароль": "Enter password",
+    "В игре": "In game",
+    "Патч «4 ГБ памяти» для Wow.exe — меньше вылетов в ЦЛК и на БГ":
+        "“4 GB” patch for Wow.exe — fewer crashes in ICC and battlegrounds",
+    "Анти-АФК: персонаж не уходит в «Отошёл» и не выходит из игры через 30 "
+    "минут":
+        "Anti-AFK: the character never goes “Away” or gets logged out after "
+        "30 minutes",
+    "Общий список друзей и игнора для всех персонажей":
+        "One friends and ignore list for all characters",
+    "Поиск группы из чата (/wm lfg)": "Group finder from chat (/wm lfg)",
+    "Графика при запуске": "Graphics on launch",
+    "Как в настройках игры": "As set in the game",
+    "Как у аккаунта": "Same as the account",
+    "Лёгкая": "Light",
+    "Минимальная, без звука (фон / твинк)":
+        "Minimal, muted (background / alt window)",
     "Менеджер персонажей WOW 3.3.5a (by Zaifat)":
         "WoW 3.3.5a Character Manager (by Zaifat)",
     # account -> characters tree
@@ -1108,6 +1124,10 @@ def _default_cfg():
         "backup_dir":           "",   # empty = <wow_dir>/_WowManagerBackups
         # UI extras
         "hover_card":           True,    # info card on row hover (deploys addon)
+        "laa_patch":            True,    # 4GB flag on Wow.exe (never removed)
+        "anti_afk":             False,   # keep the character from going AFK
+        "sync_friends":         True,    # one friends / ignore list for all alts
+        "lfg":                  True,    # in-game group finder from chat
         "overlay":              False,   # in-game minimap relog button
         # Columns: ordered keys + per-column label/width overrides + sort
         "columns":              ["class", "level", "gs", "gold", "realm",
@@ -1537,6 +1557,48 @@ def patch_wow_exe(wow_exe):
         f.write(image)
 
 
+IMAGE_FILE_LARGE_ADDRESS_AWARE = 0x0020
+
+
+def _coff_characteristics_offset(f):
+    f.seek(0x3C)
+    e_lfanew = struct.unpack("<I", f.read(4))[0]
+    f.seek(e_lfanew)
+    if f.read(4) != b"PE\x00\x00":
+        raise ValueError("not a PE file")
+    return e_lfanew + 4 + 18        # COFF header: Characteristics field
+
+
+def is_large_address_aware(wow_exe):
+    try:
+        with open(wow_exe, "rb") as f:
+            f.seek(_coff_characteristics_offset(f))
+            return bool(struct.unpack("<H", f.read(2))[0]
+                        & IMAGE_FILE_LARGE_ADDRESS_AWARE)
+    except (OSError, ValueError, struct.error):
+        return False
+
+
+def ensure_large_address_aware(wow_exe):
+    """The "4GB patch": let the 32-bit client use up to 4 GB instead of 2 on
+    64-bit Windows, which is what stops the out-of-memory crashes in Icecrown
+    and big battlegrounds. Only ever sets the flag — many clients (WoWCircle
+    included) already ship with it, and it is never taken away. Returns True
+    if the flag is set afterwards."""
+    if is_large_address_aware(wow_exe):
+        return True
+    try:
+        with open(wow_exe, "r+b") as f:
+            off = _coff_characteristics_offset(f)
+            f.seek(off)
+            flags = struct.unpack("<H", f.read(2))[0]
+            f.seek(off)
+            f.write(struct.pack("<H", flags | IMAGE_FILE_LARGE_ADDRESS_AWARE))
+        return True
+    except (OSError, ValueError, struct.error):
+        return False        # the client is running and holds the file
+
+
 def _file_hash(path):
     try:
         h = hashlib.md5()
@@ -1548,7 +1610,7 @@ def _file_hash(path):
         return None
 
 
-def deploy_patch(wow_dir, on_error=None):
+def deploy_patch(wow_dir, on_error=None, large_address=True):
     src_dll = _bundled(AWESOME_DLL)
     if not os.path.isfile(src_dll):
         raise RuntimeError(t("В программу не зашит {dll}").format(dll=AWESOME_DLL))
@@ -1573,6 +1635,8 @@ def deploy_patch(wow_dir, on_error=None):
         raise RuntimeError(t("Не найден Wow.exe в {dir}").format(dir=wow_dir))
     if not is_wow_patched(wow_exe):
         patch_wow_exe(wow_exe)
+    if large_address:
+        ensure_large_address_aware(wow_exe)
 
 
 def update_realmlist(wow_dir, realmlist):
@@ -1612,7 +1676,7 @@ def _lua_str(s):
 
 def deploy_addon(wow_dir, enabled, show_minimap, characters=None,
                  hover_card=True, card_fields=None, card_labels=None,
-                 current_account=""):
+                 current_account="", sync_friends=True, lfg=True):
     """Copy the WowManager addon into the game (or remove it). Writes Config.lua
     with the minimap-overlay flag, the hover-card flag and the manager's
     character list — including each character's class colour and a snapshot of
@@ -1638,6 +1702,8 @@ def deploy_addon(wow_dir, enabled, show_minimap, characters=None,
                  # same account can be switched to without restarting the
                  # client; the rest need the manager to relaunch Wow.exe.
                  "    currentAccount = %s," % _lua_str(current_account or ""),
+                 "    syncFriends = %s," % ("true" if sync_friends else "false"),
+                 "    lfg = %s," % ("true" if lfg else "false"),
                  "    characters = {"]
         for c in (characters or []):
             nm = (c.get("name") or "").strip()
@@ -2342,6 +2408,94 @@ def compute_totp(secret, t=None, digits=6, period=30):
     return str(code % (10 ** digits)).zfill(digits)
 
 
+# Graphics / sound presets applied by the patch DLL for one launch. Values
+# the client then writes to WTF/Config.wtf are put back by the manager once
+# that client exits (see restore_config_cvars), so a light background window
+# never leaves your main client with its settings.
+GRAPHICS_PRESETS = {
+    "light": {
+        "farclip": "450", "groundEffectDensity": "32", "groundEffectDist": "70",
+        "environmentDetail": "0.75", "particleDensity": "0.5",
+        "weatherDensity": "1", "extShadowQuality": "1",
+        "detailDoodadAlpha": "50", "maxFPS": "60", "maxFPSBk": "20",
+    },
+    "minimal": {
+        "farclip": "177", "groundEffectDensity": "16", "groundEffectDist": "1",
+        "environmentDetail": "0.5", "particleDensity": "0.1",
+        "weatherDensity": "0", "extShadowQuality": "0",
+        "detailDoodadAlpha": "0", "projectedTextures": "0",
+        "spellEffectLevel": "0", "maxFPS": "30", "maxFPSBk": "8",
+        "Sound_EnableAllSound": "0",
+    },
+}
+GRAPHICS_LABELS = (("", "Как в настройках игры"), ("light", "Лёгкая"),
+                   ("minimal", "Минимальная, без звука (фон / твинк)"))
+
+
+def effective_graphics(cfg, char):
+    """A character's own preset, else its account's, else none."""
+    own = (char.get("graphics") or "").strip()
+    if own == "none":                # explicitly "as in the game" for this one
+        return ""
+    if own in GRAPHICS_PRESETS:
+        return own
+    acc = account_entry_for(cfg, char.get("account")) or {}
+    inherited = (acc.get("graphics") or "").strip()
+    return inherited if inherited in GRAPHICS_PRESETS else ""
+
+
+_CVAR_LINE = re.compile(r'^\s*SET\s+(\S+)\s+"(.*)"\s*$', re.I)
+
+
+def read_config_cvars(wow_dir, names):
+    """{name: value or None} for the given CVars as WTF/Config.wtf has them."""
+    wanted = {n.lower(): n for n in names}
+    out = {n: None for n in names}
+    try:
+        with open(os.path.join(wow_dir, "WTF", "Config.wtf"), "r",
+                  encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                m = _CVAR_LINE.match(line)
+                if m and m.group(1).lower() in wanted:
+                    out[wanted[m.group(1).lower()]] = m.group(2)
+    except OSError:
+        pass
+    return out
+
+
+def restore_config_cvars(wow_dir, snapshot):
+    """Put the snapshot back into WTF/Config.wtf: known values are rewritten,
+    CVars that weren't in the file before are removed again."""
+    path = os.path.join(wow_dir, "WTF", "Config.wtf")
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return False
+    lower = {k.lower(): k for k in snapshot}
+    out, seen = [], set()
+    for line in lines:
+        m = _CVAR_LINE.match(line)
+        key = lower.get(m.group(1).lower()) if m else None
+        if key is None:
+            out.append(line)
+            continue
+        seen.add(key)
+        if snapshot[key] is not None:
+            out.append('SET %s "%s"' % (m.group(1), snapshot[key]))
+    for key, val in snapshot.items():
+        if key not in seen and val is not None:
+            out.append('SET %s "%s"' % (key, val))
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="\r\n") as fh:
+            fh.write("\n".join(out) + "\n")
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        return False
+
+
 def _build_autologin_json(char, realmlist):
     data = {
         "login":     char.get("account", ""),
@@ -2358,11 +2512,14 @@ def _build_autologin_json(char, realmlist):
     return data
 
 
-def _write_autologin_json(wow_dir, char, realmlist):
-    """Write per-launch params next to Wow.exe — DLL reads it then deletes it."""
+def _write_autologin_json(wow_dir, char, realmlist, extra=None):
+    """Write per-launch params next to Wow.exe — DLL reads it then deletes it.
+    `extra` adds flat string keys (anti-AFK switch, cvar_<Name> presets)."""
+    data = _build_autologin_json(char, realmlist)
+    data.update(extra or {})
     path = os.path.join(wow_dir, "autologin.json")
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(_build_autologin_json(char, realmlist), f, ensure_ascii=False)
+        json.dump(data, f, ensure_ascii=False)
 
 
 def drop_stale_autologin_json(wow_dir):
@@ -2563,18 +2720,22 @@ def launch_wow(cfg, char, on_error=None):
     realmlist = (char.get("realmlist") or cfg.get("realmlist")
                  or REALMLISTS_DEFAULT[0])
 
-    deploy_patch(wow_dir, on_error=on_error)
+    deploy_patch(wow_dir, on_error=on_error,
+                 large_address=bool(cfg.get("laa_patch", True)))
     update_realmlist(wow_dir, realmlist)
 
     # Deploy (or remove) the data-collector / overlay addon based on settings
-    addon_on = bool(cfg.get("hover_card", True) or cfg.get("overlay", False))
+    addon_on = bool(cfg.get("hover_card", True) or cfg.get("overlay", False)
+                    or cfg.get("sync_friends", True) or cfg.get("lfg", True))
     deploy_addon(wow_dir, addon_on,
                  show_minimap=bool(cfg.get("overlay", False)),
                  characters=cfg.get("characters", []),
                  hover_card=bool(cfg.get("hover_card", True)),
                  card_fields=cfg.get("card_fields"),
                  card_labels=cfg.get("card_labels"),
-                 current_account=char.get("account", ""))
+                 current_account=char.get("account", ""),
+                 sync_friends=bool(cfg.get("sync_friends", True)),
+                 lfg=bool(cfg.get("lfg", True)))
 
     # Optional: snapshot WTF + AddOns in the background (throttled, ring-buffered)
     if cfg.get("backup_wtf"):
@@ -2587,8 +2748,17 @@ def launch_wow(cfg, char, on_error=None):
                          args=(wow_dir, dest_root, keep, interval),
                          daemon=True).start()
 
+    extra = {}
+    if cfg.get("anti_afk"):
+        extra["antiafk"] = "1"
+    preset = effective_graphics(cfg, char)
+    cvars = GRAPHICS_PRESETS.get(preset, {})
+    for name, value in cvars.items():
+        extra["cvar_" + name] = value
+    snapshot = read_config_cvars(wow_dir, cvars) if cvars else None
+
     # Always write autologin.json so the DLL has params no matter who launches Wow.
-    _write_autologin_json(wow_dir, char, realmlist)
+    _write_autologin_json(wow_dir, char, realmlist, extra)
 
     if cfg.get("use_loader") and (cfg.get("loader_path") or "").strip():
         _launch_via_loader(cfg, wow_dir, on_error=on_error)
@@ -2599,7 +2769,15 @@ def launch_wow(cfg, char, on_error=None):
     # and the JSON path could both fire a login packet, the server saw two
     # auth attempts from the same account and kicked one of them mid-world-
     # load — that was the "1 in 3" disconnect on character enter.
-    subprocess.Popen([exe], cwd=wow_dir)
+    proc = subprocess.Popen([exe], cwd=wow_dir)
+    if snapshot is not None:
+        # The client saves whatever it ran with to Config.wtf on exit; put the
+        # user's own values back afterwards.
+        def _restore():
+            proc.wait()
+            time.sleep(1.0)
+            restore_config_cvars(wow_dir, snapshot)
+        threading.Thread(target=_restore, daemon=True).start()
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -3868,6 +4046,12 @@ class App:
         self._field(dlg, t("Realmlist"), lambda p: ttk.Combobox(
             p, textvariable=rl_var, values=self.cfg.get("realmlists", []),
             font=font(10)))
+        gfx_opts = [(k, t(lbl)) for k, lbl in GRAPHICS_LABELS]
+        gfx_var = tk.StringVar(value=dict(gfx_opts).get(
+            acc.get("graphics", ""), gfx_opts[0][1]))
+        self._field(dlg, t("Графика при запуске"), lambda p: ttk.Combobox(
+            p, textvariable=gfx_var, values=[lbl for _k, lbl in gfx_opts],
+            state="readonly", font=font(10)))
 
         tk.Label(dlg, text=t("Секрет 2FA (Google / 2FAS Auth / Yandex "
                              "Authenticator)"),
@@ -3914,7 +4098,9 @@ class App:
             fields = {"account": login, "password": pass_var.get(),
                       "totp_secret": normalize_totp_secret(totp_var.get()),
                       "realm": realm_var.get().strip(),
-                      "realmlist": rl_var.get().strip()}
+                      "realmlist": rl_var.get().strip(),
+                      "graphics": next((k for k, lbl in gfx_opts
+                                        if lbl == gfx_var.get()), "")}
             if editing:
                 old = acc.get("account", "")
                 for e in self.cfg["characters"]:
@@ -3983,6 +4169,14 @@ class App:
         self._field(dlg, t("Реалм"), lambda p: ttk.Combobox(
             p, textvariable=realm_var, values=self.cfg.get("realms", []),
             font=font(10)))
+        cgfx_opts = ([("", t("Как у аккаунта")),
+                      ("none", t("Как в настройках игры"))]
+                     + [(k, t(lbl)) for k, lbl in GRAPHICS_LABELS if k])
+        cgfx_var = tk.StringVar(value=dict(cgfx_opts).get(
+            ch.get("graphics", ""), cgfx_opts[0][1]))
+        self._field(dlg, t("Графика при запуске"), lambda p: ttk.Combobox(
+            p, textvariable=cgfx_var, values=[lbl for _k, lbl in cgfx_opts],
+            state="readonly", font=font(10)))
         tk.Label(dlg, text=t("Пароль и 2FA берутся из аккаунта."),
                  bg=BG, fg=MUTED, font=font(8), anchor="w"
                  ).pack(fill="x", padx=22, pady=(6, 0))
@@ -4008,7 +4202,9 @@ class App:
             cls_disp = class_var.get().strip()
             cls = "" if cls_disp == t(NO_CLASS) else class_canon(cls_disp)
             fields = {"name": name, "account": login, "class": cls,
-                      "realm": realm}
+                      "realm": realm,
+                      "graphics": next((k for k, lbl in cgfx_opts
+                                        if lbl == cgfx_var.get()), "")}
             if editing:
                 moved = acc_key(ch.get("account")) != acc_key(login)
                 ch.update(fields)
@@ -4414,6 +4610,7 @@ class App:
         sh = dlg.winfo_screenheight()
         h = min(int(sh * 0.92), max(260, body.winfo_reqheight() + extra))
         dlg.geometry(f"{int(width)}x{h}")
+        style_window_chrome(dlg)
 
     # ── scrollable dialog body helper ───────────────────────────────────────
 
@@ -5007,7 +5204,8 @@ class App:
 
         # ── WoW path ─────────────────────────────────────────────────────────
         tk.Label(body, text=t("Папка с Wow.exe"), bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(fill="x", padx=20, pady=(16, 0))
+                 font=("Segoe UI", 9), anchor="w"
+                 ).pack(fill="x", padx=20, pady=(16, 0))
         path_var = tk.StringVar(value=self.cfg.get("wow_path", ""))
         row = tk.Frame(body, bg=BG); row.pack(fill="x", padx=20, pady=(4, 12))
         _make_entry(row, path_var).pack(side="left", fill="x", expand=True,
@@ -5027,7 +5225,8 @@ class App:
 
         # ── Realms list ──────────────────────────────────────────────────────
         tk.Label(body, text=t("Список реалмов (по строке на реалм)"), bg=BG,
-                 fg=MUTED, font=("Segoe UI", 9)).pack(fill="x", padx=20)
+                 fg=MUTED, font=("Segoe UI", 9), anchor="w"
+                 ).pack(fill="x", padx=20)
         realms_text = tk.Text(body, height=6, bg=ENTRY_BG, fg=TEXT,
                               relief="flat", highlightthickness=1,
                               font=("Segoe UI", 10), wrap="none")
@@ -5038,7 +5237,8 @@ class App:
 
         # ── Realmlists ───────────────────────────────────────────────────────
         tk.Label(body, text=t("Список realmlist-серверов (по строке)"), bg=BG,
-                 fg=MUTED, font=("Segoe UI", 9)).pack(fill="x", padx=20)
+                 fg=MUTED, font=("Segoe UI", 9), anchor="w"
+                 ).pack(fill="x", padx=20)
         realmlists_text = tk.Text(body, height=3, bg=ENTRY_BG, fg=TEXT,
                                   relief="flat", highlightthickness=1,
                                   font=("Segoe UI", 10), wrap="none")
@@ -5251,10 +5451,30 @@ class App:
                   command=lambda: self.columns_constructor(dlg)
                   ).pack(side="right")
 
+        # ── In the game ─────────────────────────────────────────────────────
+        tk.Label(body, text=t("В игре"), bg=BG, fg=MUTED, font=("Segoe UI", 9),
+                 anchor="w").pack(fill="x", padx=20, pady=(10, 0))
+        game_vars = {}
+        for key, label, default in (
+                ("laa_patch", "Патч «4 ГБ памяти» для Wow.exe — меньше вылетов "
+                              "в ЦЛК и на БГ", True),
+                ("anti_afk", "Анти-АФК: персонаж не уходит в «Отошёл» и не "
+                             "выходит из игры через 30 минут", False),
+                ("sync_friends", "Общий список друзей и игнора для всех "
+                                 "персонажей", True),
+                ("lfg", "Поиск группы из чата (/wm lfg)", True)):
+            var = tk.BooleanVar(value=bool(self.cfg.get(key, default)))
+            game_vars[key] = var
+            tk.Checkbutton(body, text=t(label), variable=var, bg=BG, fg=TEXT,
+                           activebackground=BG, activeforeground=TEXT,
+                           selectcolor=ENTRY_BG, font=("Segoe UI", 9),
+                           anchor="w", justify="left", wraplength=520
+                           ).pack(fill="x", padx=18, pady=(2, 0))
+
         # ── Config management (moved to the bottom) ──────────────────────────
         tk.Frame(body, bg=BORDER, height=1).pack(fill="x", padx=20, pady=(12, 6))
         tk.Label(body, text=t("Конфиг"), bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(fill="x", padx=20)
+                 font=("Segoe UI", 9), anchor="w").pack(fill="x", padx=20)
         cfg_row = tk.Frame(body, bg=BG)
         cfg_row.pack(fill="x", padx=20, pady=(2, 8))
         for txt_key, bg_, fg_, cmd in (
@@ -5310,6 +5530,8 @@ class App:
             self.cfg["secret_mode"]     = chosen
             self.cfg["backup_wtf"]      = bool(backup_var.get())
             self.cfg["hover_card"]      = bool(hover_var.get())
+            for key, var in game_vars.items():
+                self.cfg[key] = bool(var.get())
             self.cfg["overlay"]         = bool(overlay_var.get())
             save_cfg(self.cfg)
             dlg.destroy()
