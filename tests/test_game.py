@@ -194,6 +194,34 @@ launch_cfg["graphics_presets"] = {"my1": {"name": "Ночной",
 launch_cfg["characters"][0]["graphics"] = "my1"
 L.launch_wow(launch_cfg, launch_cfg["characters"][1])
 check("a user preset reaches the DLL", seen_json.get("cvar_farclip") == "300")
+# screen settings travel through Config.wtf, not through the DLL
+seen_json.clear()
+launch_cfg["graphics_presets"] = {"scr": {"name": "Окно", "cvars": {
+    "gxWindow": "1", "gxMaximize": "1", "gxResolution": "1600x900",
+    "farclip": "300"}}}
+launch_cfg["characters"][0]["graphics"] = "scr"
+L.launch_wow(launch_cfg, launch_cfg["characters"][1])
+check("screen CVars are not sent to the DLL",
+      "cvar_gxResolution" not in seen_json and "cvar_gxWindow" not in seen_json)
+check("...but the other CVars still are",
+      seen_json.get("cvar_farclip") == "300")
+written = io.open(os.path.join(wow2, "WTF", "Config.wtf"),
+                  encoding="utf-8").read()
+check("screen CVars are written into Config.wtf before launch",
+      'SET gxResolution "1600x900"' in written
+      and 'SET gxMaximize "1"' in written)
+check("borderless is window + maximize",
+      L.screen_mode_cvars("borderless") == {"gxWindow": "1",
+                                            "gxMaximize": "1"}
+      and L.screen_mode_of({"gxWindow": "1", "gxMaximize": "1"})
+      == "borderless")
+check("fullscreen round-trips",
+      L.screen_mode_of(L.screen_mode_cvars("full")) == "full")
+check("no screen keys means no mode", L.screen_mode_of({"farclip": "1"}) == "")
+check("the resolution list is not empty and looks like WxH",
+      all("x" in r for r in L.available_resolutions()))
+launch_cfg["characters"][0]["graphics"] = ""
+launch_cfg["graphics_presets"] = {}
 
 seen_json.clear()
 launch_cfg["anti_afk"] = False
@@ -205,10 +233,25 @@ check("no cvar_ keys without a preset",
       not any(k.startswith("cvar_") for k in seen_json))
 
 # ── harvest: one launch per account, driven by the addon ──────────────────
+client_alive = [0]
+
+
 class HarvestApp:
     """Just enough of App for _harvest_worker."""
     cfg = None
     _harvest_stop = False
+    logged = []
+
+    def _harvest_log(self, line):
+        self.logged.append(line)
+
+    # the real waiting logic, so the test exercises it
+    _wait_for_client_exit = L.App._wait_for_client_exit
+
+    def _client_running(self):
+        # "the client is up" for the first few polls of each account
+        client_alive[0] -= 1
+        return client_alive[0] > 0
 
     def __init__(self, cfg):
         self.cfg = cfg
@@ -250,6 +293,7 @@ procs = []
 
 def fake_launch(cfg, char, on_error=None, harvest_chars=None):
     launches.append((char.get("name") or char.get("account"), harvest_chars))
+    client_alive[0] = 2
     procs.append(HarvestProc())
     return procs[-1]
 
@@ -273,6 +317,10 @@ check("an account with no characters is visited too",
 check("harvest mode is switched off afterwards",
       addon_calls and not addon_calls[-1].get("harvest_chars"))
 check("the run is reported", any("acc" in ln for ln in lines))
+check("the run is written to the harvest log",
+      any("run start" in ln for ln in app.logged)
+      and any("run end" in ln for ln in app.logged))
+
 
 # stop button
 launches.clear()

@@ -4,7 +4,7 @@
 ; downloads.
 
 #define MyAppName    "Менеджер персонажей WOW"
-#define MyAppVersion "1.6.2"
+#define MyAppVersion "1.6.3"
 #define MyAppPublisher "Zaifat"
 #define MyAppExeName "Manager_WOW.exe"
 

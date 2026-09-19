@@ -105,26 +105,8 @@ check("weekly fields offered as columns",
 check("composite building blocks are not columns",
       "dailyMax" not in cols and "questsTotal" not in cols
       and "dailyResetAt" not in cols and "arenaTeams" not in cols)
-check("status column offered", "status" in cols)
-
-# ── feature 6: realm probe ────────────────────────────────────────────────
-srv = socket.socket()
-srv.bind(("127.0.0.1", 0))
-srv.listen(1)
-port = srv.getsockname()[1]
-threading.Thread(target=lambda: srv.accept(), daemon=True).start()
-ms = L.probe_realm("127.0.0.1:%d" % port)
-check("probe reaches a live port", ms is not None and ms >= 0)
-check("probe reports a dead port as None",
-      L.probe_realm("127.0.0.1:1") is None)
-check("probe shrugs off an empty host", L.probe_realm("") is None)
-L.REALM_STATUS["logon.x"] = {"ok": True, "ms": 42, "at": time.time()}
-check("status text for a live realm", "42" in L.realm_status_text("logon.x"))
-L.REALM_STATUS["logon.dead"] = {"ok": False, "ms": 0, "at": time.time()}
-check("status text for a dead realm",
-      L.realm_status_text("logon.dead") and "42" not in L.realm_status_text("logon.dead"))
-check("unknown realm reports as pending",
-      L.realm_status_text("never.checked") != "")
+check("the realm ping is gone", not hasattr(L, "probe_realm")
+      and "status" not in cols)
 
 # ── feature 1: addon config carries the current account ───────────────────
 wow = os.path.join(tmp, "wow")

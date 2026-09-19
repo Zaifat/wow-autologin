@@ -18,7 +18,7 @@ One-click login for World of Warcraft 3.3.5a (WotLK). Pick a character — the c
 - **Collect everything at once** — the manager walks every account and character and fills the table in
 - **2FA** — Google Authenticator, 2FAS, Yandex Key
 - **Passwords encrypted** — with the Windows key, or a master password for a portable config
-- **Tools** — realm ping, desktop shortcuts, guild-forum roster export, copy UI settings between characters, WTF backups
+- **Tools** — desktop shortcuts, guild-forum roster export, copy UI settings between characters, WTF backups
 
 ## Get started
 

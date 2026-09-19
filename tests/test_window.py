@@ -29,7 +29,7 @@ cfg["secret_mode"] = "master"
 cfg["master_salt"] = base64.b64encode(salt).decode()
 cfg["master_check"] = L.master_verifier(key)
 cfg["wow_path"] = tmp
-cfg["columns"] = ["class", "gs", "dailyDone", "questsDone", "gold", "status",
+cfg["columns"] = ["class", "gs", "dailyDone", "questsDone", "gold",
                   "realmlist"]
 cfg["characters"] = [
     {"name": "Тестомаг", "account": "acc", "password": "pw", "class": "Маг",
@@ -52,8 +52,6 @@ L.INGAME.update({
                  "played": 300000, "dailyDone": 25, "dailyMax": 25,
                  "questsDone": 0, "questsTotal": 4},
 })
-L.REALM_STATUS["logon.x"] = {"ok": True, "ms": 37, "at": time.time()}
-L.REALM_STATUS["logon.y"] = {"ok": False, "ms": 0, "at": time.time()}
 
 asked = []
 
@@ -99,8 +97,6 @@ check("empty account says it waits for the first login",
 cols = list(app._cols)
 acc_vals = tree.item(tops[0], "values")
 char_vals = tree.item(tree.get_children(tops[0])[0], "values")
-check("status shows on the account row", "37" in acc_vals[cols.index("status")])
-check("status is not repeated on characters", char_vals[cols.index("status")] == "")
 check("account row totals the gold of its characters",
       acc_vals[cols.index("gold")] != "")
 check("dailies composite on a character row",
@@ -301,6 +297,25 @@ res = app._on_double(FakeClick(acc_row))
 check("double-click on an account row launches it",
       launched == ["acc"] and res == "break")
 
+# ── sorting from the footer ───────────────────────────────────────────────
+opts = dict((lbl, key) for key, lbl in app.sort_options())
+check("the sort picker offers manual order and the columns",
+      "" in opts.values() and "gs" in opts.values() and "name" in opts.values())
+app._sort_var.set(next(lbl for lbl, key in opts.items() if key == "gs"))
+app._on_sort_pick()
+root.update()
+acc_iid = str(E().index(L.account_entry_for(app.cfg, "acc")))
+names_sorted = [tree.item(c, "text") for c in tree.get_children(acc_iid)]
+check("sorting by GS orders the characters",
+      names_sorted == ["Тестопал", "Тестомаг"])
+check("the chosen sort is saved", L.load_cfg().get("sort", {}).get("col") == "gs")
+app._toggle_sort_dir()
+root.update()
+check("the direction flips",
+      [tree.item(c, "text") for c in tree.get_children(acc_iid)]
+      == ["Тестомаг", "Тестопал"]
+      and L.load_cfg().get("sort", {}).get("reverse") is True)
+
 # ── drag reorder: a character within its account ──────────────────────────
 acc_iid = str(E().index(L.account_entry_for(app.cfg, "acc")))
 first, second_row = tree.get_children(acc_iid)
@@ -310,6 +325,8 @@ app._drag["moved"] = True
 app._on_drag_drop(None)
 root.update()
 acc_idx = int(str(E().index(L.account_entry_for(app.cfg, "acc"))))
+check("dragging switches back to the manual order",
+      not (app.cfg.get("sort") or {}).get("col"))
 check("drag reorders characters inside the account",
       [E()[acc_idx + 1]["name"], E()[acc_idx + 2]["name"]]
       == ["Тестопал", "Тестомаг"])

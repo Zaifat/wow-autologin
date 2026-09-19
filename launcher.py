@@ -23,7 +23,7 @@ import webbrowser
 import zipfile
 from tkinter import filedialog, messagebox, ttk
 
-__version__ = "1.6.2"
+__version__ = "1.6.3"
 
 
 # Bail out immediately if a debugger is attached. This is a soft anti-RE
@@ -356,6 +356,11 @@ _EN = {
     "FPS в фоне": "FPS in background",
     "Звук": "Sound",
     "Музыка": "Music",
+    "Режим окна": "Window mode",
+    "Разрешение": "Resolution",
+    "Полный экран": "Fullscreen",
+    "Окно": "Windowed",
+    "Окно без рамки": "Borderless window",
     "Как в настройках игры": "As set in the game",
     "Как у аккаунта": "Same as the account",
     "Лёгкая": "Light",
@@ -375,10 +380,10 @@ _EN = {
     "Логин и пароль — персонажи подтянутся сами при первом входе в игру.":
         "Login and password — characters are picked up on your first login.",
     "Добавить аккаунт": "Add account",
-    "Двойной клик или Enter — играть  ·  ПКМ — все действия  ·  "
-    "перетаскивание — порядок":
-        "Double-click or Enter — play  ·  Right-click — all actions  ·  "
-        "Drag — reorder",
+    "Двойной клик или Enter — играть  ·  ПКМ — все действия":
+        "Double-click or Enter — play  ·  Right-click — all actions",
+    "Сортировка": "Sort by",
+    "Вручную": "Manual",
     "Войти в аккаунт": "Log in to account",
     "Добавить персонажа": "Add character",
     "Изменить аккаунт": "Edit account",
@@ -464,10 +469,6 @@ _EN = {
     "Отмена": "Cancel",
     "ОК": "OK",
     # realm status
-    "Статус": "Status",
-    "{ms} мс": "{ms} ms",
-    "нет ответа": "no answer",
-    "проверяю…": "checking…",
     # account summary
     "Всего золота: {g}": "Total gold: {g}",
     "Лучший ГС: {n} ({gs})": "Top GS: {n} ({gs})",
@@ -531,8 +532,6 @@ STATIC_COLUMNS = {
     "account":   ("Аккаунт",   110, "w",      lambda c: c.get("account", "")),
     "realm":     ("Реалм",     200, "w",      lambda c: c.get("realm", "")),
     "realmlist": ("Realmlist", 150, "w",      lambda c: c.get("realmlist", "")),
-    "status":    ("Статус",    95,  "center",
-                  lambda c: realm_status_text(c.get("realmlist", ""))),
 }
 # Friendly labels + numeric flag for known in-game fields
 IG_LABELS = {
@@ -780,48 +779,6 @@ REALMLISTS_DEFAULT = [
     "logon.wowcircle.me",
     "logon.wowcircle.com",
 ]
-
-# ── realm status ──────────────────────────────────────────────────────────────
-# A plain TCP connect to the logon server answers "is this realmlist alive and
-# how far away is it" before you click anything. Filled in by a background
-# thread; the "status" column and the hover card read it.
-
-REALM_PORT = 3724               # standard 3.3.5a logon port
-REALM_PROBE_INTERVAL = 60       # seconds between sweeps
-REALM_STATUS = {}               # host -> {"ok": bool, "ms": int, "at": float}
-# The config's fallback realmlist, kept here so column getters (which only see
-# one character) can resolve an empty per-character value.
-FALLBACK_REALMLIST = [REALMLISTS_DEFAULT[0]]
-
-
-def probe_realm(host, timeout=2.5):
-    """Round-trip time to the logon server in ms, or None if it didn't answer.
-    A realmlist may carry an explicit `host:port`."""
-    host = (host or "").strip()
-    if not host:
-        return None
-    port = REALM_PORT
-    if ":" in host:
-        host, _, tail = host.rpartition(":")
-        try:
-            port = int(tail)
-        except ValueError:
-            port = REALM_PORT
-    started = time.monotonic()
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return int((time.monotonic() - started) * 1000)
-    except OSError:
-        return None
-
-
-def realm_status_text(host):
-    host = (host or "").strip() or FALLBACK_REALMLIST[0]
-    st = REALM_STATUS.get(host)
-    if not st:
-        return t("проверяю…")
-    return t("{ms} мс").format(ms=st["ms"]) if st["ok"] else t("нет ответа")
-
 
 # Wow.exe binary patches that make the client load AwesomeWotlkLib.dll
 _PATCHES = [
@@ -1211,8 +1168,7 @@ def _default_cfg():
         "lfg":                  True,    # in-game group finder from chat
         "overlay":              False,   # in-game minimap relog button
         # Columns: ordered keys + per-column label/width overrides + sort
-        "columns":              ["class", "level", "gs", "gold", "realm",
-                                 "status"],
+        "columns":              ["class", "level", "gs", "gold", "realm"],
         "column_labels":        {},      # key -> custom heading text
         "column_widths":        {},      # key -> px width
         "sort":                 {},      # {"col": key, "reverse": bool}
@@ -2539,6 +2495,91 @@ GRAPHICS_SETTINGS = (
 GRAPHICS_SETTING_LABELS = {c: lbl for c, lbl, _k, _lo, _hi, _st, _d
                            in GRAPHICS_SETTINGS}
 
+# Screen mode and resolution are read by the client when it starts, so these
+# go into WTF/Config.wtf before launch instead of being set from the DLL.
+# (gxWindow 0 = fullscreen; gxWindow 1 + gxMaximize 1 = borderless window.)
+GX_SETTINGS = ("gxWindow", "gxMaximize", "gxResolution")
+GRAPHICS_SETTING_LABELS.update({"gxWindow": "Режим окна",
+                                "gxMaximize": "Режим окна",
+                                "gxResolution": "Разрешение"})
+SCREEN_MODES = (("full", "Полный экран", "0", "0"),
+                ("window", "Окно", "1", "0"),
+                ("borderless", "Окно без рамки", "1", "1"))
+
+
+def screen_mode_of(cvars):
+    """Which of the three modes a preset's CVars describe, or "" for none."""
+    if "gxWindow" not in cvars:
+        return ""
+    win = str(cvars.get("gxWindow", "")).strip()
+    maxi = str(cvars.get("gxMaximize", "0")).strip()
+    for key, _label, w, m in SCREEN_MODES:
+        if win == w and maxi == m:
+            return key
+    return "window" if win == "1" else "full"
+
+
+def screen_mode_cvars(key):
+    for k, _label, w, m in SCREEN_MODES:
+        if k == key:
+            return {"gxWindow": w, "gxMaximize": m}
+    return {}
+
+
+def available_resolutions():
+    """Screen modes Windows reports, widest first; falls back to a common
+    list when it can't ask."""
+    out = set()
+    if sys.platform == "win32":
+        try:
+            class DEVMODE(ctypes.Structure):
+                _fields_ = [("dmDeviceName", ctypes.c_wchar * 32),
+                            ("dmSpecVersion", ctypes.c_ushort),
+                            ("dmDriverVersion", ctypes.c_ushort),
+                            ("dmSize", ctypes.c_ushort),
+                            ("dmDriverExtra", ctypes.c_ushort),
+                            ("dmFields", ctypes.c_ulong),
+                            ("dmPositionX", ctypes.c_long),
+                            ("dmPositionY", ctypes.c_long),
+                            ("dmDisplayOrientation", ctypes.c_ulong),
+                            ("dmDisplayFixedOutput", ctypes.c_ulong),
+                            ("dmColor", ctypes.c_short),
+                            ("dmDuplex", ctypes.c_short),
+                            ("dmYResolution", ctypes.c_short),
+                            ("dmTTOption", ctypes.c_short),
+                            ("dmCollate", ctypes.c_short),
+                            ("dmFormName", ctypes.c_wchar * 32),
+                            ("dmLogPixels", ctypes.c_ushort),
+                            ("dmBitsPerPel", ctypes.c_ulong),
+                            ("dmPelsWidth", ctypes.c_ulong),
+                            ("dmPelsHeight", ctypes.c_ulong),
+                            ("dmDisplayFlags", ctypes.c_ulong),
+                            ("dmDisplayFrequency", ctypes.c_ulong),
+                            ("dmICMMethod", ctypes.c_ulong),
+                            ("dmICMIntent", ctypes.c_ulong),
+                            ("dmMediaType", ctypes.c_ulong),
+                            ("dmDitherType", ctypes.c_ulong),
+                            ("dmReserved1", ctypes.c_ulong),
+                            ("dmReserved2", ctypes.c_ulong),
+                            ("dmPanningWidth", ctypes.c_ulong),
+                            ("dmPanningHeight", ctypes.c_ulong)]
+
+            dm = DEVMODE()
+            dm.dmSize = ctypes.sizeof(DEVMODE)
+            i = 0
+            while ctypes.windll.user32.EnumDisplaySettingsW(None, i,
+                                                            ctypes.byref(dm)):
+                if dm.dmPelsWidth >= 800 and dm.dmBitsPerPel >= 24:
+                    out.add("%dx%d" % (dm.dmPelsWidth, dm.dmPelsHeight))
+                i += 1
+        except Exception:
+            pass
+    if not out:
+        out = {"1024x768", "1280x720", "1280x1024", "1366x768", "1600x900",
+               "1920x1080", "2560x1440"}
+    return sorted(out, key=lambda r: [int(x) for x in r.split("x")],
+                  reverse=True)
+
 
 def gfx_value_str(value):
     """Store numbers the way the client writes them: 1 not 1.0, 0.75 not 0.7500."""
@@ -2923,9 +2964,14 @@ def launch_wow(cfg, char, on_error=None, harvest_chars=None):
         extra["antiafk"] = "1"
     preset = effective_graphics(cfg, char)
     cvars = preset_cvars(cfg, preset) if preset else {}
-    for name, value in cvars.items():
-        extra["cvar_" + name] = value
     snapshot = read_config_cvars(wow_dir, cvars) if cvars else None
+    screen = {k: v for k, v in cvars.items() if k in GX_SETTINGS}
+    for name, value in cvars.items():
+        if name not in GX_SETTINGS:
+            extra["cvar_" + name] = value
+    if screen:
+        # The client reads these at startup, so they go in before it runs.
+        restore_config_cvars(wow_dir, screen)
 
     # Always write autologin.json so the DLL has params no matter who launches Wow.
     _write_autologin_json(wow_dir, char, realmlist, extra)
@@ -3234,8 +3280,6 @@ class App:
         except Exception:
             pass
         self._unlock_secrets()
-        FALLBACK_REALMLIST[0] = (self.cfg.get("realmlist")
-                                 or REALMLISTS_DEFAULT[0])
         self.build()
         self._setup_tray()
         self._start_background_checks()
@@ -3405,35 +3449,9 @@ class App:
                     lambda u=(url or RELEASES_URL): webbrowser.open(u),
                     accent="#7FB7E8")
 
-        def _realms():
-            """Keep REALM_STATUS fresh. Only redraws when something actually
-            changed, so a stable ping doesn't repaint the table every minute."""
-            while True:
-                try:
-                    hosts = {(c.get("realmlist") or "").strip()
-                             for c in self.cfg.get("characters", [])}
-                    hosts.add((self.cfg.get("realmlist") or "").strip())
-                    hosts.discard("")
-                    changed = False
-                    for host in hosts:
-                        ms = probe_realm(host)
-                        fresh = {"ok": ms is not None, "ms": ms or 0,
-                                 "at": time.time()}
-                        prev = REALM_STATUS.get(host)
-                        if (not prev or prev["ok"] != fresh["ok"]
-                                or abs(prev["ms"] - fresh["ms"]) > 25):
-                            changed = True
-                        REALM_STATUS[host] = fresh
-                    if changed:
-                        self.root.after(0, self.render_rows)
-                except Exception:
-                    pass
-                time.sleep(REALM_PROBE_INTERVAL)
-
         threading.Thread(
             target=lambda: drop_stale_autologin_json(self.cfg.get("wow_path", "")),
             daemon=True).start()
-        threading.Thread(target=_realms, daemon=True).start()
         threading.Thread(target=_clock, daemon=True).start()
         threading.Thread(target=_update, daemon=True).start()
         threading.Thread(target=self._refresh_ingame, daemon=True).start()
@@ -3685,10 +3703,23 @@ class App:
         # ── footer ───────────────────────────────────────────────────────────
         footer = tk.Frame(self.root, bg=BG)
         footer.pack(fill="x", padx=20, pady=(0, 12))
+        tk.Label(footer, text=t("Сортировка"), bg=BG, fg=MUTED,
+                 font=font(9)).pack(side="left")
+        self._sort_var = tk.StringVar()
+        self._sort_box = ttk.Combobox(footer, textvariable=self._sort_var,
+                                      state="readonly", width=20,
+                                      font=font(9))
+        self._sort_box.pack(side="left", padx=(8, 4))
+        self._sort_box.bind("<<ComboboxSelected>>", self._on_sort_pick)
+        self._sort_dir = FlatButton(footer, "", padx=8, pady=3,
+                                    command=self._toggle_sort_dir)
+        self._sort_dir.pack(side="left")
+        self._refresh_sort_picker()
+
         tk.Label(footer,
                  text=t("Двойной клик или Enter — играть  ·  ПКМ — все "
-                        "действия  ·  перетаскивание — порядок"),
-                 bg=BG, fg=MUTED, font=font(9)).pack(side="left")
+                        "действия"),
+                 bg=BG, fg=MUTED, font=font(9)).pack(side="left", padx=(16, 0))
         _hyperlink(footer, TELEGRAM_HANDLE, TELEGRAM_URL, bg=BG
                    ).pack(side="right", padx=(12, 0))
 
@@ -3726,6 +3757,63 @@ class App:
         self.root.bind("<Control-n>", lambda _e: self.account_dialog(None))
 
         self.render_rows()
+
+    # ── sorting ──────────────────────────────────────────────────────────────
+
+    def sort_options(self):
+        """(column key, label) pairs for the footer picker. "" is the manual
+        order you get by dragging rows around."""
+        opts = [("", t("Вручную")),
+                ("name", t("Персонаж"))]
+        for col in self._cols:
+            label, _w, _a, _g = col_meta(col)
+            opts.append((col, t(label)))
+        return opts
+
+    def _refresh_sort_picker(self):
+        box = getattr(self, "_sort_box", None)
+        if box is None or not box.winfo_exists():
+            return
+        opts = self.sort_options()
+        box.configure(values=[lbl for _k, lbl in opts])
+        current = (self.cfg.get("sort") or {}).get("col") or ""
+        if current and current not in [k for k, _l in opts]:
+            current = ""
+        self._sort_var.set(dict(opts).get(current, opts[0][1]))
+        reverse = bool((self.cfg.get("sort") or {}).get("reverse"))
+        self._sort_dir.set_enabled(bool(current))
+        for lab in self._sort_dir._labels:
+            lab.configure(text="\u25BC" if reverse else "\u25B2")
+
+    def _on_sort_pick(self, _e=None):
+        opts = self.sort_options()
+        key = next((k for k, lbl in opts if lbl == self._sort_var.get()), "")
+        srt = dict(self.cfg.get("sort") or {})
+        if key:
+            srt["col"] = key
+            srt.setdefault("reverse", False)
+        else:
+            srt = {}
+        self.cfg["sort"] = srt
+        save_cfg(self.cfg)
+        self._refresh_sort_picker()
+        self.render_rows()
+
+    def _toggle_sort_dir(self):
+        srt = dict(self.cfg.get("sort") or {})
+        if not srt.get("col"):
+            return
+        srt["reverse"] = not srt.get("reverse")
+        self.cfg["sort"] = srt
+        save_cfg(self.cfg)
+        self._refresh_sort_picker()
+        self.render_rows()
+
+    def _clear_sort(self):
+        """Dragging a row means "I'll order these myself"."""
+        if (self.cfg.get("sort") or {}).get("col"):
+            self.cfg["sort"] = {}
+            self._refresh_sort_picker()
 
     def _fit_columns(self, _e=None):
         """Give spare width to the name column; shrink proportionally when the
@@ -3806,9 +3894,7 @@ class App:
         server, and totals over its characters where adding up makes sense."""
         vals = []
         for col in self._cols:
-            if col == "status":
-                vals.append(realm_status_text(acc.get("realmlist", "")))
-            elif col in ("realm", "realmlist", "account"):
+            if col in ("realm", "realmlist", "account"):
                 vals.append(acc.get(col, ""))
             elif col in ("gold", "played"):
                 total = 0
@@ -3864,12 +3950,9 @@ class App:
                                                            not collapsed),
                             tags=("account",))
             for idx, c in shown:
-                # Realm status belongs to the account row; repeating it on
-                # every character only adds noise.
                 tree.insert(parent, "end", iid=str(idx),
                             text=c.get("name", ""),
-                            values=tuple("" if col == "status"
-                                         else col_meta(col)[3](c)
+                            values=tuple(col_meta(col)[3](c)
                                          for col in self._cols),
                             tags=("cls_" + c.get("class", ""),))
 
@@ -3885,6 +3968,7 @@ class App:
             self._empty.place(relx=0.5, rely=0.45, anchor="center")
 
         self._render_chips(n_acc, n_chars)
+        self._refresh_sort_picker()
         self._update_actions()
         self._refresh_tray()
 
@@ -4008,9 +4092,8 @@ class App:
     def _on_drag_start(self, e):
         self._resizing = (self.tree.identify_region(e.x, e.y) == "separator")
         iid = self.tree.identify_row(e.y)
-        # Reordering only makes sense on the full, unsorted list
-        if (not iid or iid == "orphans" or self.search_var.get().strip()
-                or (self.cfg.get("sort") or {}).get("col")):
+        # Reordering needs the full list in front of us; a search hides rows.
+        if not iid or iid == "orphans" or self.search_var.get().strip():
             self._drag = None
             return
         self._drag = {"iid": iid, "moved": False}
@@ -4038,6 +4121,7 @@ class App:
         d, self._drag = self._drag, None
         if not d or not d["moved"]:
             return
+        self._clear_sort()          # a manual order replaces any sorting
         entries = self.cfg["characters"]
         order = []
         for top in self.tree.get_children(""):
@@ -4516,9 +4600,9 @@ class App:
         cls = char.get("class", "")
         color = CLASS_COLORS.get(cls, ACCENT)
         win = tk.Toplevel(self.root)
+        win.withdraw()          # keep it off-screen until it has a position
         win.overrideredirect(True)
         win.attributes("-topmost", True)
-        style_window_chrome(win, rounded=True)
         try:
             win.attributes("-alpha", 0.97)
         except Exception:
@@ -4547,9 +4631,6 @@ class App:
 
         rec = INGAME.get(str(char.get("name", "")).lower())
         labels = self.cfg.get("card_labels", {})
-        row(t("Статус") + ":", "%s — %s" % (
-            char.get("realmlist") or FALLBACK_REALMLIST[0],
-            realm_status_text(char.get("realmlist", ""))))
 
         def field_label(key):
             return labels.get(key) or t(CARD_LABELS.get(key, key))
@@ -4628,6 +4709,8 @@ class App:
         x = min(x, sw - w - 8)
         y = min(y, sh - h - 8)
         win.geometry(f"+{x}+{y}")
+        win.deiconify()
+        style_window_chrome(win, rounded=True)
         self._card = win
 
     def _refresh_tray(self):
@@ -5334,6 +5417,13 @@ class App:
             entry = presets.setdefault(key, {})
             entry["name"] = name_var.get().strip() or key
             cvars = {}
+            mode_use, mode_var, res_use, res_var = state["screen"]
+            if mode_use.get():
+                chosen = next((k for k, lbl, _w, _m in SCREEN_MODES
+                               if t(lbl) == mode_var.get()), "")
+                cvars.update(screen_mode_cvars(chosen))
+            if res_use.get() and res_var.get():
+                cvars["gxResolution"] = res_var.get()
             for cvar, (use_var, val_var) in state["rows"].items():
                 if use_var.get():
                     cvars[cvar] = gfx_value_str(val_var.get())
@@ -5343,6 +5433,14 @@ class App:
             state["loading"] = True
             state["key"] = key
             values = preset_cvars(self.cfg, key) if key else {}
+            mode_use, mode_var, res_use, res_var = state["screen"]
+            mode_key = screen_mode_of(values)
+            mode_use.set(bool(mode_key))
+            mode_var.set(next((t(lbl) for k, lbl, _w, _m in SCREEN_MODES
+                               if k == (mode_key or "full")), ""))
+            res_use.set("gxResolution" in values)
+            res_var.set(values.get("gxResolution", "")
+                        or (available_resolutions() or [""])[0])
             name_var.set(preset_label(self.cfg, key) if key else "")
             can_edit = editable(key)
             name_entry.configure(state="normal" if can_edit else "disabled")
@@ -5355,7 +5453,8 @@ class App:
                     val_var.set(float(values.get(cvar, default)))
                 except (TypeError, ValueError):
                     val_var.set(float(default))
-            for widgets in state.get("widgets", []):
+            for widgets in (state.get("widgets", [])
+                            + state.get("screen_widgets", [])):
                 for w in widgets:
                     try:
                         w.configure(state="normal" if can_edit else "disabled")
@@ -5374,6 +5473,36 @@ class App:
                                     else t("выкл"))
                 else:
                     label.configure(text=gfx_value_str(val_var.get()))
+
+        # screen mode and resolution first — they matter most
+        mode_use = tk.BooleanVar(value=False)
+        mode_var = tk.StringVar()
+        res_use = tk.BooleanVar(value=False)
+        res_var = tk.StringVar()
+        state["screen"] = (mode_use, mode_var, res_use, res_var)
+
+        def screen_changed(*_a):
+            store()
+        for _v in (mode_use, mode_var, res_use, res_var):
+            _v.trace_add("write", screen_changed)
+        mode_labels = [t(lbl) for _k, lbl, _w, _m in SCREEN_MODES]
+        screen_widgets = []
+        for label, use_var, var, values in (
+                (t("Режим окна"), mode_use, mode_var, mode_labels),
+                (t("Разрешение"), res_use, res_var, available_resolutions())):
+            row = tk.Frame(rows_area, bg=BG)
+            row.pack(fill="x", pady=1)
+            cb = tk.Checkbutton(row, variable=use_var, bg=BG, fg=TEXT,
+                                activebackground=BG, selectcolor=ENTRY_BG,
+                                highlightthickness=0, bd=0)
+            cb.pack(side="left")
+            tk.Label(row, text=label, bg=BG, fg=TEXT, font=font(9), width=28,
+                     anchor="w").pack(side="left")
+            box = ttk.Combobox(row, textvariable=var, values=values,
+                               state="readonly", font=font(9), width=22)
+            box.pack(side="right", padx=(0, 10))
+            screen_widgets.append((cb, box))
+        state["screen_widgets"] = screen_widgets
 
         # one row per setting
         state["widgets"], state["value_labels"] = [], {}
@@ -5597,10 +5726,41 @@ class App:
         self._fit_dialog(dlg, 580)
         dlg.grab_set()
 
+    def _harvest_log(self, line):
+        """A run leaves a trace next to the config — when something goes wrong
+        in the game there is otherwise nothing to look at."""
+        try:
+            with open(os.path.join(_config_dir(), "harvest.log"), "a",
+                      encoding="utf-8") as fh:
+                fh.write("%s  %s\n" % (time.strftime("%H:%M:%S"), line))
+        except OSError:
+            pass
+
+    def _client_running(self):
+        return is_wow_running()
+
+    def _wait_for_client_exit(self, proc, deadline, expect_walk):
+        """Wait until no game client is running any more. Watching only the
+        process we started isn't enough — a client can hand over to another
+        process, and then an instant "it exited" would make us clean up while
+        the game is still loading."""
+        gone_for = 0
+        while time.time() < deadline and not self._harvest_stop:
+            running = self._client_running()
+            if not running and (proc is None or proc.poll() is not None):
+                gone_for += 1
+                if gone_for >= 3:
+                    return True
+            else:
+                gone_for = 0
+            time.sleep(1)
+        return False
+
     def _harvest_worker(self, plan, say, status, done):
         """Runs off the UI thread: one client launch per account."""
         wow = self.cfg.get("wow_path", "")
         collected = 0
+        self._harvest_log("=== run start: %d accounts" % len(plan))
         try:
             for n, (acc, chars) in enumerate(plan, 1):
                 if self._harvest_stop:
@@ -5614,35 +5774,46 @@ class App:
                                                         c=len(names)))
                 target = dict(chars[0]) if chars else acc
                 before = charlist_signature(wow)
+                self._harvest_log("%s: %d characters -> %s"
+                                  % (login, len(names), names))
                 try:
                     proc = launch_wow(self.cfg, target, harvest_chars=names)
                 except Exception as e:                  # noqa: BLE001
                     say("  " + str(e))
+                    self._harvest_log("  launch failed: %s" % e)
                     continue
                 if proc is None:
                     say(t("  Через внешний лоадер сбор не работает."))
                     break
-                # Accounts with no characters yet only need the roster file.
-                deadline = time.time() + (90 + 70 * len(names) if names else 90)
-                while time.time() < deadline and not self._harvest_stop:
-                    if proc.poll() is not None:
-                        break
-                    if not names and charlist_signature(wow) != before:
-                        say(t("  Список персонажей получен."))
-                        break
-                    time.sleep(1)
-                if proc.poll() is None:
+                deadline = time.time() + (120 + 90 * len(names) if names
+                                          else 120)
+                if names:
+                    finished = self._wait_for_client_exit(proc, deadline, True)
+                else:
+                    # An account with no characters only needs the roster file.
+                    finished = False
+                    while time.time() < deadline and not self._harvest_stop:
+                        if charlist_signature(wow) != before:
+                            say(t("  Список персонажей получен."))
+                            finished = True
+                            break
+                        if not self._client_running() and proc.poll() is not None:
+                            break
+                        time.sleep(1)
+                if not finished or self._harvest_stop:
                     if not self._harvest_stop and names:
                         say(t("  Не уложился во время — закрываю клиент."))
+                    self._harvest_log("  timeout/stop, closing the client")
                     try:
                         proc.terminate()
                     except OSError:
                         pass
-                    for _ in range(20):
-                        if proc.poll() is not None:
+                    for _ in range(30):
+                        if not self._client_running():
                             break
                         time.sleep(0.5)
                 time.sleep(2)               # let the client flush its files
+                self._harvest_log("  account done")
                 self.root.after(0, self._refresh_ingame)
                 if self.cfg.get("auto_import_chars", True):
                     lists = read_char_lists(wow)
@@ -5650,7 +5821,12 @@ class App:
                 collected += len(names)
                 say(t("  Готово: {c}").format(c=len(names) or "-"))
         finally:
-            # drop harvest mode from the addon config again
+            # Only clear harvest mode once no client is left that could still
+            # be reading the addon config.
+            for _ in range(30):
+                if not self._client_running():
+                    break
+                time.sleep(1)
             try:
                 deploy_addon(wow, bool(self.cfg.get("hover_card", True)
                                        or self.cfg.get("overlay", False)),
@@ -5662,6 +5838,7 @@ class App:
             except Exception:
                 pass
             say(t("Собрано персонажей: {c}").format(c=collected))
+            self._harvest_log("=== run end: %d characters" % collected)
             done()
 
     def backup_settings(self, parent):
