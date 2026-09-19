@@ -843,12 +843,60 @@ static void gluexml_postload()
         writeLog("[postload] realmName = %s", realmname);
     }
 
+    // Per-launch graphics / sound preset from the manager: every
+    // "cvar_<Name>" entry in autologin.json is applied before the world loads
+    // (lighter settings for a background window, sound off for a second
+    // client). Unknown names are skipped, so a typo can't break the launch.
+    loadJsonParams();
+    for (const auto& [key, value] : s_jsonParams) {
+        if (key.rfind("cvar_", 0) != 0 || value.empty())
+            continue;
+        const char* name = key.c_str() + 5;
+        if (Console::CVar* cv = Console::FindCVar(name)) {
+            Console::SetCVarValue(cv, value.c_str(), 1, 0, 0, 1);
+            writeLog("[preset] %s = %s", name, value.c_str());
+        } else {
+            writeLog("[preset] unknown cvar '%s' skipped", name);
+        }
+    }
+
     const char* login = getParam("login");
     const char* password = getParam("password");
     if (login && password) {
         writeLog("[postload] NetClient::Login(%s, ***)", login);
         NetClient::Login(login, password);
     }
+}
+
+
+// ── anti-AFK ────────────────────────────────────────────────────────────────
+// The client keeps the time of the last mouse / keyboard event at 0xB499A4
+// and compares it with its own clock (0x86AE20) in the per-frame world update
+// at 0x52B24C: 5 minutes idle sets the AFK flag, 30 minutes logs the character
+// out. Verified against Wow.exe 3.3.5a build 12340. Refreshing that timestamp
+// from the same clock keeps both timers from ever firing. Server-side checks
+// (for example battleground inactivity) are not affected.
+static DWORD* const kLastHardwareAction = (DWORD*)0x00B499A4;
+static DWORD (*const OsGetAsyncTimeMs)() = (DWORD(*)())0x0086AE20;
+static const DWORD kAntiAfkEveryMs = 20000;
+
+static void antiafk_onupdate()
+{
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char* v = getParam("antiafk");
+        enabled = (v && strcmp(v, "1") == 0) ? 1 : 0;
+        if (enabled)
+            writeLog("[antiafk] enabled");
+    }
+    if (!enabled || !IsInWorld())
+        return;
+    static DWORD s_lastTick = 0;
+    DWORD now = GetTickCount();
+    if (s_lastTick && now - s_lastTick < kAntiAfkEveryMs)
+        return;
+    s_lastTick = now;
+    *kLastHardwareAction = OsGetAsyncTimeMs();
 }
 
 
@@ -874,4 +922,5 @@ void CommandLine::initialize()
     Hooks::GlueXML::registerCharEnum(gluexml_charlist_arrived);
     Hooks::GlueXML::registerPostLoad(gluexml_postload);
     Hooks::FrameScript::registerOnUpdate(gluexml_character_onupdate);
+    Hooks::FrameScript::registerOnUpdate(antiafk_onupdate);
 }
