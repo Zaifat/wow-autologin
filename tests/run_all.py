@@ -19,12 +19,14 @@ TESTS = [
     "test_features.py",
     "test_tools.py",
     "test_roster.py",
+    "test_game.py",
     "test_ipc.py",
     "test_window.py",
     "test_static_audit.py",
     "test_lua_syntax.py",
     "test_lua_globals.py",
     "test_lua_generated.py",
+    "test_addon_logic.py",
 ]
 
 
