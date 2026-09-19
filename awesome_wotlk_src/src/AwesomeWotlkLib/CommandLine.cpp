@@ -2,6 +2,7 @@
 #include "Hooks.h"
 #include "GameClient.h"
 #include "Utils.h"
+#include "CharListJson.h"
 #include <shellapi.h>
 #include <bcrypt.h>
 #include <stdio.h>
@@ -576,71 +577,31 @@ static void gluexml_charenum()
 // the manager can fill in an account's characters by itself — the user only
 // has to enter the login once. Names, level, class, race: nothing secret.
 
-static void jsonAppendEscaped(std::string& out, const char* s)
-{
-    for (const unsigned char* p = (const unsigned char*)s; p && *p; ++p) {
-        unsigned char c = *p;
-        if (c == '"' || c == '\\') { out += '\\'; out += (char)c; }
-        else if (c < 0x20) {
-            char buf[8];
-            sprintf_s(buf, "\\u%04x", c);
-            out += buf;
-        }
-        else out += (char)c;    // UTF-8 bytes pass through untouched
-    }
-}
-
-
-static std::string fileSafe(const char* s)
-{
-    std::string out;
-    for (const char* p = s; p && *p; ++p) {
-        char c = *p;
-        bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-               || (c >= '0' && c <= '9') || c == '-' || c == '.';
-        out += ok ? c : '_';
-    }
-    return out.empty() ? std::string("_") : out;
-}
-
-
-// Realm names are often Cyrillic and would all collapse to "____" in a file
-// name, so the realm part of the name is a hash; the real name is inside.
-static unsigned fnv1a(const char* s)
-{
-    unsigned h = 2166136261u;
-    for (const unsigned char* p = (const unsigned char*)s; p && *p; ++p) {
-        h ^= *p;
-        h *= 16777619u;
-    }
-    return h;
-}
-
-
 static void exportCharacterList()
 {
     const char* login = getParam("login");
     if (!login || !*login) return;          // not launched by the manager
 
     LoginUI::CharVector* chars = LoginUI::GetChars();
-    if (!chars || chars->size < 0 || chars->size > 64) return;
+    if (!chars || chars->size < 0 || chars->size > 64 || !chars->buf) return;
 
     const char* realm = "";
     if (Console::CVar* cv = Console::FindCVar("realmName"); cv && cv->vStr)
         realm = cv->vStr;
 
-    char dir[MAX_PATH] = {0};
-    if (!GetModuleFileNameA(NULL, dir, MAX_PATH)) return;
-    char* slash = strrchr(dir, '\\');
-    if (!slash) return;
-    *(slash + 1) = '\0';
-    strcat_s(dir, MAX_PATH, "WowManagerData");
-    CreateDirectoryA(dir, NULL);
-
-    char hash[16];
-    sprintf_s(hash, "%08x", fnv1a(realm));
-    std::string path = std::string(dir) + "\\" + fileSafe(login) + "__"
-                     + hash + ".json";
+    std::vector<CharListJson::Row> rows;
+    rows.reserve(chars->size);
+    for (int i = 0; i < chars->size; i++) {
+        const LoginUI::CharData& d = chars->buf[i].data;
+        CharListJson::Row r;
+        // never read past the fixed-size name field
+        r.name.assign(d.name, strnlen(d.name, sizeof(d.name)));
+        r.level = (unsigned char)d.level;
+        r.cls = (unsigned char)d.class_;
+        r.race = (unsigned char)d.race;
+        r.gender = (unsigned char)d.gender;
+        rows.push_back(r);
+    }
 
     FILETIME ft;
     GetSystemTimeAsFileTime(&ft);
@@ -649,29 +610,25 @@ static void exportCharacterList()
     ull.HighPart = ft.dwHighDateTime;
     unsigned long long unixSec =
         (ull.QuadPart - 116444736000000000ULL) / 10000000ULL;
+    std::string json = CharListJson::build(login, realm, unixSec, rows);
 
-    std::string json = "{\"account\":\"";
-    jsonAppendEscaped(json, login);
-    json += "\",\"realm\":\"";
-    jsonAppendEscaped(json, realm);
-    char num[32];
-    sprintf_s(num, "\",\"at\":%llu,\"chars\":[", unixSec);
-    json += num;
-    for (int i = 0; i < chars->size; i++) {
-        const LoginUI::CharData& d = chars->buf[i].data;
-        if (i) json += ",";
-        json += "{\"name\":\"";
-        char name[sizeof(d.name) + 1] = {0};
-        memcpy(name, d.name, sizeof(d.name));   // never read past the field
-        jsonAppendEscaped(json, name);
-        sprintf_s(num, "\",\"level\":%u,\"class\":%u,\"race\":%u,\"gender\":%u}",
-                  (unsigned)(unsigned char)d.level,
-                  (unsigned)(unsigned char)d.class_,
-                  (unsigned)(unsigned char)d.race,
-                  (unsigned)(unsigned char)d.gender);
-        json += num;
+    std::string dir;
+    {
+        char exe[MAX_PATH] = {0};
+        DWORD n = GetModuleFileNameA(NULL, exe, MAX_PATH);
+        if (!n || n >= MAX_PATH) return;
+        dir.assign(exe, n);
+        size_t slash = dir.find_last_of('\\');
+        if (slash == std::string::npos) return;
+        dir.resize(slash + 1);
+        dir += "WowManagerData";
     }
-    json += "]}\n";
+    CreateDirectoryA(dir.c_str(), NULL);
+
+    char hash[16];
+    std::snprintf(hash, sizeof(hash), "%08x", CharListJson::fnv1a(realm));
+    std::string path = dir + "\\" + CharListJson::fileSafe(login) + "__"
+                     + hash + ".json";
 
     // Write-then-rename, so the manager never reads half a file.
     std::string tmp = path + ".tmp";
@@ -680,7 +637,7 @@ static void exportCharacterList()
     fwrite(json.data(), 1, json.size(), f);
     fclose(f);
     if (MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING))
-        writeLog("[export] %d characters for this account", chars->size);
+        writeLog("[export] %d characters for this account", (int)rows.size());
     else
         DeleteFileA(tmp.c_str());
 }
