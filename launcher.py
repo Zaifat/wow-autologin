@@ -1396,8 +1396,10 @@ def backup_interval_hours(cfg):
             return max(0, int(cfg.get("backup_interval_hours") or 0))
         except (TypeError, ValueError):
             return 48
+    if "backup_interval_min" not in cfg:
+        return 48
     try:
-        old = max(0, int(cfg.get("backup_interval_min", 0) or 0))
+        old = max(0, int(cfg.get("backup_interval_min") or 0))
     except (TypeError, ValueError):
         return 48
     # Half an hour used to be the default; keep such a config throttled

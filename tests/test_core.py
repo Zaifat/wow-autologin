@@ -76,6 +76,8 @@ check("half an hour stays throttled instead of becoming every launch",
       L.backup_interval_hours({"backup_interval_min": 30}) == 1)
 check("'every launch' survives the conversion",
       L.backup_interval_hours({"backup_interval_min": 0}) == 0)
+check("a config that says nothing gets the default",
+      L.backup_interval_hours({}) == 48)
 check("junk falls back to the defaults",
       L.backup_interval_hours({"backup_interval_hours": "x"}) == 48
       and L.backup_keep({"backup_keep": "x"}) == 10
