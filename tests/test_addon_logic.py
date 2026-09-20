@@ -91,6 +91,7 @@ RAID_CLASS_COLORS = { MAGE = { r = 0.4, g = 0.8, b = 1 } }
 src = io.open("addon/WowManager/Core.lua", encoding="utf-8").read()
 EXPORT = '''
 return { parseLfg = parseLfg, lowerUtf8 = lowerUtf8, parseGS = parseGS,
+         computeGearScore = computeGearScore,
          syncList = syncList, socialTicker = socialTicker,
          socialQueue = function() return socialQueue end,
          onLfgChat = onLfgChat, lfgEntries = lfgEntries,
@@ -131,6 +132,62 @@ check("'ик' inside a word doesn't count", ad("никто не идет") is No
 check("raid number alone isn't a GS", ad("ЦЛК 25 нужны все")[4] is None)
 check("a four-digit number without a marker isn't a GS",
       ad("ульда 25 сбор 2019 года")[4] is None)
+# real ads people posted, where the old parser found nothing
+check("'от 5700к' is a gear score",
+      ad("В ЦЛК 25(об) нид КОТ или Хпал от 5700к БОЕ-А ДИС МФ 24/25")[4] == 5700)
+check("'от 6.2' means 6200",
+      ad("-----Цлк 25хм нужны Рпал/Ппал Дц/.Ршам! (Дц/Ршам) от 6.2 4т10.2")[4]
+      == 6200)
+check("tier gear is not a gear score", mod.parseGS("цлк 25 4т10.2 нужны дд")
+      is None)
+check("free spots are not a gear score", mod.parseGS("ик 10 идем 8/10") is None)
+check("a plain '6' is not a gear score", mod.parseGS("ульда 25 идем 6 боссов")
+      is None)
+check("'5,9+' is read with a comma", mod.parseGS("цлк 25 дд 5,9+") == 5900)
+
+# ── GearScore: the same numbers the GearScore addon shows ─────────────────
+L.execute("""
+ITEMS, EQUIP = {}, {}
+function GetItemInfo(link)
+    local it = ITEMS[link]
+    if not it then return nil end
+    return link, link, it.rarity, it.ilvl, nil, nil, nil, nil, it.loc
+end
+function GetInventoryItemLink(_, slot) return EQUIP[slot] end
+function equip(slot, rarity, ilvl, loc)
+    local link = "item" .. slot
+    ITEMS[link] = { rarity = rarity, ilvl = ilvl, loc = loc }
+    EQUIP[slot] = link
+end
+function clearGear() EQUIP = {}; ITEMS = {} end
+""")
+gear = lua.equip
+clear = lua.clearGear
+gs = mod.computeGearScore
+
+clear()
+check("no gear scores nothing", gs() == 0)
+clear(); gear(1, 4, 264, "INVTYPE_HEAD")
+check("an epic 264 head scores 494 like GearScore does", gs() == 494)
+clear(); gear(1, 3, 200, "INVTYPE_HEAD")
+check("a blue item uses its own constants", gs() == 271)
+clear(); gear(16, 4, 264, "INVTYPE_2HWEAPON")
+check("a two-hander counts double", gs() == 988)
+clear(); gear(16, 4, 264, "INVTYPE_2HWEAPON"); gear(17, 4, 264, "INVTYPE_WEAPON")
+check("Titan's Grip halves both weapons", gs() == 741)
+clear(); gear(13, 4, 264, "INVTYPE_TRINKET")
+check("a trinket counts by its slot weight", gs() == 278)
+clear(); gear(4, 2, 264, "INVTYPE_BODY")
+check("the shirt is skipped", gs() == 0)
+clear(); gear(19, 4, 264, "INVTYPE_HEAD")
+check("the tabard is skipped", gs() == 0)
+L.execute('function UnitClass() return "Охотник", "HUNTER" end')
+clear(); gear(18, 4, 264, "INVTYPE_RANGED")
+check("a hunter's bow is his real weapon", gs() == 830)
+L.execute('function UnitClass() return "Паладин", "PALADIN" end')
+clear(); gear(18, 4, 264, "INVTYPE_RANGED")
+check("for everyone else the ranged slot barely counts", gs() == 156)
+clear()
 
 # chat feed keeps one ad per author, newest wins
 mod.onLfgChat("ЦЛК25 нужен хил гс 5.5к", "Leader", None)
@@ -263,6 +320,31 @@ for _ in range(5):
     lua.NOW = lua.NOW + 60
     login_sync("Alpha")
 check("a refused name is tried at most twice", attempts == 2)
+
+# ── the lists edited in the manager ───────────────────────────────────────
+# The manager writes them into Config.lua; the addon treats them like names
+# added (or removed) on some other character.
+lua.NOW = lua.NOW + 60
+L.execute('WowManagerConfig.friendsAdd = { "Гость" }')
+L.execute('WowManagerConfig.friendsDrop = { "Dana" }')
+login_sync("Alpha")
+check("a name from the manager is added in game", "Гость" in friends_of("Alpha"))
+check("a name removed in the manager goes away",
+      "Dana" not in friends_of("Alpha"))
+lua.NOW = lua.NOW + 60
+login_sync("Beta")
+check("the manager's list reaches every character",
+      "Гость" in friends_of("Beta") and "Dana" not in friends_of("Beta"))
+# ...but a name put back by hand afterwards stays: the manager seeds the
+# shared list, it doesn't keep policing it.
+lua.NOW = lua.NOW + 60
+as_char("Alpha"); lua.AddFriend("Dana"); mod.syncList("friends"); drain()
+lua.NOW = lua.NOW + 60
+login_sync("Beta")
+check("a name put back by hand wins over the manager's removal",
+      "Dana" in friends_of("Alpha") and "Dana" in friends_of("Beta"))
+L.execute('WowManagerConfig.friendsAdd = {}')
+L.execute('WowManagerConfig.friendsDrop = {}')
 
 # ── harvest mode walks the account's characters ────────────────────────────
 def enter_world():

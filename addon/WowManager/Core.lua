@@ -25,8 +25,10 @@ local function foldCase(s)
     return s
 end
 
--- ── GearScore (fallback if the GearScore addon isn't installed) ─────────────
-local GS_QUALITY = { [0]=0.005, [1]=0.2, [2]=0.4, [3]=0.7, [4]=0.85, [5]=0.92, [6]=1, [7]=1.2 }
+-- ── GearScore (used when the GearScore addon isn't installed) ──────────────
+-- Same arithmetic as the GearScore addon, so both show the same number:
+-- per-slot weight, a quality scale, and two sets of constants depending on
+-- whether the item level is above 120.
 local GS_SLOT = {
     INVTYPE_RELIC=0.3164, INVTYPE_TRINKET=0.5625, INVTYPE_HEAD=1,
     INVTYPE_NECK=0.5625, INVTYPE_SHOULDER=0.75, INVTYPE_CHEST=1, INVTYPE_ROBE=1,
@@ -36,27 +38,55 @@ local GS_SLOT = {
     INVTYPE_WEAPONOFFHAND=1, INVTYPE_SHIELD=1, INVTYPE_HOLDABLE=1,
     INVTYPE_RANGED=0.3164, INVTYPE_THROWN=0.3164, INVTYPE_RANGEDRIGHT=0.3164,
 }
+local GS_HIGH = {                      -- item level above 120
+    [4] = { 91.4500, 0.6500 }, [3] = { 81.3750, 0.8125 }, [2] = { 73, 1 },
+}
+local GS_LOW = {
+    [4] = { 26, 1.2 }, [3] = { 0.75, 1.8 }, [2] = { 8, 2 }, [1] = { 0, 2.25 },
+}
 local function gsItemScore(link)
     local _, _, rarity, ilvl, _, _, _, _, loc = GetItemInfo(link)
-    if not ilvl then return 0 end
-    local q = GS_QUALITY[rarity or 0] or 0
-    local s = GS_SLOT[loc or ""] or 0
-    if q == 0 or s == 0 then return 0 end
-    local score
-    if ilvl > 120 then
-        score = ((ilvl - 91.4500) / 0.6500) * q * s * 1.8618
-    else
-        score = ((ilvl - 4) / 26) * q * s * 1.8618 * (ilvl / 100)
-    end
+    if not (ilvl and rarity) then return 0 end
+    local slot = GS_SLOT[loc or ""]
+    if not slot then return 0 end
+    local quality = 1
+    if rarity == 5 then quality = 1.3; rarity = 4              -- legendary
+    elseif rarity == 7 then rarity = 3; ilvl = 187.05          -- heirloom
+    elseif rarity <= 1 then quality = 0.005; rarity = 2 end    -- poor / common
+    local f = (ilvl > 120 and GS_HIGH or GS_LOW)[rarity]
+    if not f then return 0 end
+    local score = math.floor(((ilvl - f[1]) / f[2]) * slot * 1.8618 * quality)
     if score < 0 then score = 0 end
     return score
 end
 local function computeGearScore()
+    local _, class = UnitClass("player")
+    local hunter = (class == "HUNTER")
+    local mh = GetInventoryItemLink("player", 16)
+    local oh = GetInventoryItemLink("player", 17)
+    -- Titan's Grip: two weapons where one of them is two-handed, so each
+    -- counts half.
+    local titan = 1
+    local function twoHanded(link)
+        if not link then return false end
+        local _, _, _, _, _, _, _, _, loc = GetItemInfo(link)
+        return loc == "INVTYPE_2HWEAPON"
+    end
+    if (mh and oh and twoHanded(mh)) or twoHanded(oh) then titan = 0.5 end
     local total = 0
     for slot = 1, 18 do
-        if slot ~= 4 then        -- skip shirt
+        if slot ~= 4 then                          -- skip the shirt
             local link = GetInventoryItemLink("player", slot)
-            if link then total = total + gsItemScore(link) end
+            if link then
+                local score = gsItemScore(link)
+                if slot == 16 or slot == 17 then
+                    score = score * titan
+                    if hunter then score = score * 0.3164 end
+                elseif slot == 18 and hunter then
+                    score = score * 5.3224         -- the hunter's real weapon
+                end
+                total = total + score
+            end
         end
     end
     return math.floor(total)
@@ -776,6 +806,7 @@ local function socialBucket()
     b.ignore = b.ignore or {}
     b.goneFriends = b.goneFriends or {}
     b.goneIgnore = b.goneIgnore or {}
+    b.managerSeen = b.managerSeen or {}   -- manager edits already applied
     return b
 end
 
@@ -822,6 +853,46 @@ local SOCIAL_LISTS = {
     },
 }
 
+-- Names the manager's own friends / ignore editor wants on every character.
+-- They join the shared list exactly like a name added in game, so the sync
+-- below carries them everywhere; a name the manager removed is marked gone.
+--
+-- Each entry is applied once and then remembered: the manager seeds the
+-- shared list, it doesn't police it. Whatever the player does in game after
+-- that — putting a dropped name back, dropping an added one — stands.
+local MANAGER_SOURCE = {
+    friends = { add = "friendsAdd", drop = "friendsDrop" },
+    ignore  = { add = "ignoreAdd",  drop = "ignoreDrop" },
+}
+
+local function applyManagerList(kind)
+    local src = MANAGER_SOURCE[kind]
+    local cfg = WowManagerConfig
+    if not (src and cfg) then return end
+    local L = SOCIAL_LISTS[kind]
+    local b = socialBucket()
+    local shared, gone = b[L.shared], b[L.gone]
+    local done = b.managerSeen
+    for _, name in ipairs(cfg[src.add] or {}) do
+        local key = foldCase(name or "")
+        local mark = "add:" .. kind .. ":" .. key
+        if key ~= "" and not done[mark] then
+            done[mark] = true
+            gone[key] = nil
+            if not shared[key] then shared[key] = { name = name } end
+        end
+    end
+    for _, name in ipairs(cfg[src.drop] or {}) do
+        local key = foldCase(name or "")
+        local mark = "drop:" .. kind .. ":" .. key
+        if key ~= "" and not done[mark] then
+            done[mark] = true
+            shared[key] = nil
+            if not gone[key] then gone[key] = time() end
+        end
+    end
+end
+
 local function queueAction(key, action)
     if socialQueued[key] then return end
     socialQueued[key] = true
@@ -834,6 +905,7 @@ local scheduleRecheck              -- defined right after syncList
 
 local function syncList(kind)
     if not socialEnabled() then return end
+    applyManagerList(kind)
     local L = SOCIAL_LISTS[kind]
     local b = socialBucket()
     local C = WowManagerCharDB
@@ -862,10 +934,17 @@ local function syncList(kind)
     -- missing SOCIAL_CONFIRM seconds later. The real list arriving in between
     -- clears it again.
     C[L.pending] = C[L.pending] or {}
-    local pending = C[L.pending]
+    C[L.dropped] = C[L.dropped] or {}
+    local pending, dropped = C[L.pending], C[L.dropped]
     for n in pairs(cur) do pending[n] = nil end
     for n in pairs(C[L.last] or {}) do
-        if not cur[n] and not pending[n] then pending[n] = now end
+        -- A name this character dropped because it was removed elsewhere is
+        -- gone by our own hand. Counting it as a local removal too would
+        -- stamp it as removed again later and undo a deliberate re-add
+        -- somewhere else.
+        if not cur[n] and not pending[n] and not dropped[n] then
+            pending[n] = now
+        end
     end
     local waiting = false
     for n, since in pairs(pending) do
@@ -887,8 +966,6 @@ local function syncList(kind)
     --    (once — if it shows up again after we dropped it, the player put it
     --    back on purpose, and that wins over the old removal)
     -- 3. otherwise whatever this character has joins the shared list
-    C[L.dropped] = C[L.dropped] or {}
-    local dropped = C[L.dropped]
     local count = 0
     for n, info in pairs(cur) do
         count = count + 1
@@ -1027,23 +1104,37 @@ local LFG_SEEKER = { ["lfg"] = true, ["ищу"] = true }
 
 local lowerUtf8 = foldCase
 
+-- The required gear score, as people write it in raid ads:
+--   "гс 5.5", "от 5700к", "нужен 6.2", "5,9+", "гс55"
+-- Numbers that mean something else are left alone: the raid size (25),
+-- the spots taken (24/25) and tier gear ("4т10.2").
 local function parseGS(low)
     local best
     for s, num, e in low:gmatch("()(%d+[%.,]?%d*)()") do
-        local v = tonumber((num:gsub(",", ".")))
-        if v then
-            local before = low:sub(math.max(1, s - 8), s - 1)
-            local after = low:sub(e, e + 3)
-            local marked = before:find("гс") or before:find("gs")
-            local kilo = after:find("^%s?к") or after:find("^%s?k")
-            if v < 10 and (kilo or marked) then
-                v = v * 1000
-            elseif v >= 10 and v < 100 and marked then
-                v = v * 100
-            elseif not (v >= 1000 and (marked or after:find("^%+"))) then
-                v = nil
+        local text = num:gsub(",", ".")
+        local v = tonumber(text)
+        local before = low:sub(math.max(1, s - 8), s - 1)
+        local after = low:sub(e, e + 3)
+        local marked = before:find("гс") or before:find("gs")
+        -- "к" is two bytes, so it can't go in a character class
+        local kilo = after:find("^%s?к") or after:find("^%s?k")
+        local plus = after:find("^%s?%+")
+        -- "т10.2" / "t10" is a tier set, never a gear score
+        local tier = before:find("т$") or before:find("t$")
+        if v and not tier then
+            if v < 10 then
+                -- thousands: "6.2", "6к", "гс 6", "6+"
+                if v >= 3 and (text:find("%.") or kilo or marked or plus) then
+                    v = v * 1000
+                else
+                    v = nil
+                end
+            elseif v < 100 then
+                if marked then v = v * 100 else v = nil end   -- "гс55"
+            elseif v < 1000 then
+                v = nil                                       -- raid slots etc
             end
-            if v and v >= 1000 and v <= 7000 then
+            if v and v >= 3000 and v <= 7000 then
                 v = math.floor(v)
                 if not best or v > best then best = v end
             end

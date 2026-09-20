@@ -35,17 +35,20 @@ static DWORD s_pendingTick     = 0;    // when the switch was requested
 static bool  s_switchMode      = false;// re-armed by a switch, not by the launcher
 static DWORD s_rearmTick       = 0;
 static bool  s_listSinceSwitch = false;// a character list arrived after the request
+static DWORD s_worldTick       = 0;    // when the world was last reached
+static int   s_bounces         = 0;    // times the server threw us back out
 
 // Wait this long after selecting the slot before asking to enter the world —
-// the click has to be applied client-side first.
-static const DWORD kSelectSettleMs = 700;
+// the click has to be applied client-side first, and a server that is still
+// closing the previous session needs the moment as well.
+static const DWORD kSelectSettleMs = 1500;
 // EnterWorld is asynchronous (auth handshake + loading screen). Retrying it
 // while the first attempt is still in flight makes the server drop the freshly
 // created session and the player lands back on character select — which is
 // exactly the bug this timeout exists to avoid. Only a character-select screen
 // that is still visibly up this long after the attempt gets another try.
-static const DWORD kEnterRetryMs  = 20000;
-static const int   kMaxEnterTries = 3;
+static const DWORD kEnterRetryMs  = 12000;
+static const int   kMaxEnterTries = 4;
 // A switch request only stays valid for the logout it was made for: the game's
 // countdown is 20 s, plus the trip back to character select. After that it is
 // stale, and must not hijack some later, unrelated logout.
@@ -53,6 +56,12 @@ static const DWORD kSwitchTtlMs   = 60000;
 // After logging out, the client still holds the OLD character list until the
 // server sends a fresh one. Wait for it (or this long) before picking a slot.
 static const DWORD kFreshListWaitMs = 5000;
+// The world can load and the server still push the character back to the
+// select screen a moment later — a session that hadn't finished closing, a
+// "character is still logging out" race. That isn't the player logging out,
+// so walk back in, at most twice per client.
+static const DWORD kBounceWindowMs = 45000;
+static const int   kMaxBounces     = 2;
 
 
 static void writeLog(const char* fmt, ...)
@@ -685,31 +694,46 @@ static void gluexml_character_onupdate()
     const DWORD now0 = GetTickCount();
 
     if (s_autologinDone) {
-        // Normally we stay retired for the rest of the process. The exception
-        // is an in-client character switch: the addon named a target and then
-        // logged out, so the glue screen belongs to us again.
+        // Normally we stay retired for the rest of the process. Two things
+        // bring the machine back: an in-client character switch (the addon
+        // named a target and logged out), and the server throwing us back to
+        // character select on its own right after the world loaded.
         //
         // "Back on the glue" is judged by the glue's own Lua global rather than
         // the client's in-world byte, which is not guaranteed to clear on
         // logout the way it is set on login.
-        if (s_pendingSwitch.empty() || !glueAlive(L0))
+        if (!glueAlive(L0))
             return;
-        if (now0 - s_pendingTick > kSwitchTtlMs) {
-            writeLog("[switch] request for '%s' expired", s_pendingSwitch.c_str());
+        if (!s_pendingSwitch.empty()) {
+            if (now0 - s_pendingTick > kSwitchTtlMs) {
+                writeLog("[switch] request for '%s' expired",
+                         s_pendingSwitch.c_str());
+                s_pendingSwitch.clear();
+                return;
+            }
+            s_targetCharacter = s_pendingSwitch;
+            s_targetInit      = true;
             s_pendingSwitch.clear();
+            writeLog("[switch] re-arming for '%s'", s_targetCharacter.c_str());
+        } else if (s_targetInit && s_worldTick && s_bounces < kMaxBounces
+                   && now0 - s_worldTick < kBounceWindowMs
+                   && atCharacterSelect(L0)) {
+            s_bounces++;
+            writeLog("[bounce] back on character select %u ms after the world "
+                     "loaded — entering again (try %d)",
+                     now0 - s_worldTick, s_bounces);
+            s_worldTick = 0;
+        } else {
             return;
         }
-        s_targetCharacter = s_pendingSwitch;
-        s_targetInit      = true;
-        s_pendingSwitch.clear();
         s_characterIndex  = -1;
         s_selectIssued    = false;
         s_enterTries      = 0;
         s_charEnumLogged  = false;
         s_autologinDone   = false;
-        s_switchMode      = true;
+        s_switchMode      = true;      // wait for a fresh list before picking
+        s_listSinceSwitch = false;
         s_rearmTick       = now0;
-        writeLog("[switch] re-arming for '%s'", s_targetCharacter.c_str());
     }
 
     // Reaching the world retires the whole machine for the rest of the process:
@@ -718,7 +742,9 @@ static void gluexml_character_onupdate()
     if (IsInWorld() && !glueAlive(L0)) {
         s_autologinDone = true;
         s_switchMode = false;
-        writeLog("[onupdate] world reached, autologin disarmed");
+        s_worldTick = now0;
+        writeLog("[onupdate] world reached %u ms after EnterWorld, autologin "
+                 "disarmed", s_enterTick ? now0 - s_enterTick : 0);
         return;
     }
 
