@@ -103,6 +103,21 @@ check("dailies composite on a character row",
       char_vals[cols.index("dailyDone")] == "7 / 25")
 check("name column is the tree column, not a data column", "name" not in cols)
 
+check("the version is shown in the title", L.__version__ in root.title())
+labels = []
+
+
+def walk_labels(w):
+    for c in w.winfo_children():
+        if isinstance(c, tk.Label):
+            labels.append(c.cget("text"))
+        walk_labels(c)
+
+
+walk_labels(root)
+check("the version is shown in the window",
+      any("v" + L.__version__ == x for x in labels))
+
 # ── summary chips ─────────────────────────────────────────────────────────
 chips = [w for w in app._chips.winfo_children()]
 check("summary chips rendered", len(chips) >= 4)

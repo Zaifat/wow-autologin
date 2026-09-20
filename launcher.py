@@ -23,7 +23,7 @@ import webbrowser
 import zipfile
 from tkinter import filedialog, messagebox, ttk
 
-__version__ = "1.6.3"
+__version__ = "1.7.0"
 
 
 # Bail out immediately if a debugger is attached. This is a soft anti-RE
@@ -312,6 +312,12 @@ _EN = {
     "Останавливаю…": "Stopping…",
     "Остановлено.": "Stopped.",
     "Сначала закрой запущенный WoW.": "Close the running WoW first.",
+    "  Клиент не запустился.": "  The client never started.",
+    "Запуск идёт через внешний лоадер: не трогай его окно, пока идёт сбор.":
+        "Launching through an external loader: leave its window alone while "
+        "the run is going.",
+    "Список персонажей восстановлен из резервной копии.":
+        "The roster was recovered from the backup copy.",
     "Нет аккаунтов для сбора.": "There are no accounts to collect from.",
     "Идёт сбор данных — дождись окончания.":
         "Data collection is running — wait for it to finish.",
@@ -1187,6 +1193,10 @@ def _default_cfg():
     }
 
 
+# Set when load_cfg had to fall back to the backup, so the window can say so.
+RECOVERED_FROM_BACKUP = [False]
+
+
 def _read_cfg_file(path):
     with open(path, "r", encoding="utf-8") as fh:
         cfg = json.load(fh)
@@ -1220,6 +1230,20 @@ def load_cfg(decrypt=True):
             break
         except (OSError, ValueError):
             continue
+    # save_cfg writes the backup just before replacing the real file, so the
+    # real file is normally the newer of the two. If it isn't — something
+    # outside put an older copy back — the backup holds the newer roster.
+    bak = CONFIG_FILE + ".bak"
+    if cfg is not None and os.path.isfile(bak):
+        try:
+            if os.path.getmtime(bak) > os.path.getmtime(CONFIG_FILE) + 1:
+                newer = _read_cfg_file(bak)
+                if len(newer.get("characters") or []) > len(
+                        cfg.get("characters") or []):
+                    cfg = newer
+                    RECOVERED_FROM_BACKUP[0] = True
+        except (OSError, ValueError):
+            pass
     if cfg is None:
         # Keep the unreadable file instead of silently overwriting it.
         try:
@@ -2152,6 +2176,24 @@ def is_wow_running():
         return False
 
 
+def terminate_clients():
+    """Close any running game client. Used only when a data-collection run
+    has to give up on one — with an external loader the client isn't our
+    child process, so there is nothing to terminate directly."""
+    if sys.platform != "win32":
+        return False
+    ok = False
+    for name in WOW_PROCESS_NAMES:
+        try:
+            r = subprocess.run(["taskkill", "/F", "/IM", name.decode()],
+                               capture_output=True,
+                               creationflags=0x08000000)
+            ok = ok or r.returncode == 0
+        except OSError:
+            pass
+    return ok
+
+
 def fmt_gold(copper):
     """Copper int → 'Ng Ms Кc'."""
     try:
@@ -2918,7 +2960,7 @@ def _launch_via_loader(cfg, wow_dir, on_error=None):
 
     # Leave the loader's window visible — user wanted to see it, and many
     # loaders rely on their own message pump being active.
-    subprocess.Popen([path], cwd=loader_dir)
+    return subprocess.Popen([path], cwd=loader_dir)
 
 
 def launch_wow(cfg, char, on_error=None, harvest_chars=None):
@@ -2977,8 +3019,10 @@ def launch_wow(cfg, char, on_error=None, harvest_chars=None):
     _write_autologin_json(wow_dir, char, realmlist, extra)
 
     if cfg.get("use_loader") and (cfg.get("loader_path") or "").strip():
-        _launch_via_loader(cfg, wow_dir, on_error=on_error)
-        return None
+        # The loader starts the client itself, so the handle we get back is
+        # the loader's. Anything that needs to know whether the game is up
+        # asks is_wow_running() instead.
+        return _launch_via_loader(cfg, wow_dir, on_error=on_error)
 
     # Single source of truth for credentials = autologin.json, read by the
     # DLL. Passing them ALSO via argv used to cause a race: the argv path
@@ -3281,6 +3325,12 @@ class App:
             pass
         self._unlock_secrets()
         self.build()
+        if RECOVERED_FROM_BACKUP[0]:
+            RECOVERED_FROM_BACKUP[0] = False
+            save_cfg(self.cfg)
+            self._add_banner("recovered",
+                             t("Список персонажей восстановлен из резервной "
+                               "копии."), accent=ACCENT)
         self._setup_tray()
         self._start_background_checks()
 
@@ -3580,7 +3630,7 @@ class App:
 
     def build(self):
         self._apply_ttk_styles()
-        self.root.title(t(APP_TITLE))
+        self.root.title("%s  ·  v%s" % (t(APP_TITLE), __version__))
         style_window_chrome(self.root)
 
         self._banner_area = tk.Frame(self.root, bg=BG)
@@ -3722,6 +3772,8 @@ class App:
                  bg=BG, fg=MUTED, font=font(9)).pack(side="left", padx=(16, 0))
         _hyperlink(footer, TELEGRAM_HANDLE, TELEGRAM_URL, bg=BG
                    ).pack(side="right", padx=(12, 0))
+        tk.Label(footer, text="v" + __version__, bg=BG, fg=MUTED,
+                 font=font(9)).pack(side="right", padx=(12, 0))
 
         lang_var = tk.StringVar(value=LANG)
         theme_var = tk.StringVar(value=CURRENT_THEME)
@@ -5653,7 +5705,14 @@ class App:
                  bg=BG, fg=MUTED, font=font(9), justify="left", anchor="w",
                  wraplength=520).pack(fill="x", padx=20)
 
-        minutes = max(1, int((len(plan) * 45 + chars_total * 40) / 60))
+        if self.cfg.get("use_loader"):
+            tk.Label(dlg, text=t("Запуск идёт через внешний лоадер: не трогай "
+                                 "его окно, пока идёт сбор."),
+                     bg=BG, fg=ACCENT, font=font(9), anchor="w",
+                     wraplength=520, justify="left"
+                     ).pack(fill="x", padx=20, pady=(8, 0))
+
+        minutes = max(1, int((len(plan) * 60 + chars_total * 40) / 60))
         tk.Label(dlg, text=t("Аккаунтов: {a} · персонажей: {c} · примерно "
                              "{m} мин").format(a=len(plan), c=chars_total,
                                                m=minutes),
@@ -5739,15 +5798,22 @@ class App:
     def _client_running(self):
         return is_wow_running()
 
-    def _wait_for_client_exit(self, proc, deadline, expect_walk):
+    def _wait_for_client_start(self, deadline):
+        """Wait until a client process shows up. With an external loader that
+        can take a while — the loader has its own window to get through."""
+        while time.time() < deadline and not self._harvest_stop:
+            if self._client_running():
+                return True
+            time.sleep(1)
+        return False
+
+    def _wait_for_client_exit(self, deadline):
         """Wait until no game client is running any more. Watching only the
-        process we started isn't enough — a client can hand over to another
-        process, and then an instant "it exited" would make us clean up while
-        the game is still loading."""
+        process we started isn't enough: with a loader the client isn't our
+        child at all, and a client can also hand over to another process."""
         gone_for = 0
         while time.time() < deadline and not self._harvest_stop:
-            running = self._client_running()
-            if not running and (proc is None or proc.poll() is not None):
+            if not self._client_running():
                 gone_for += 1
                 if gone_for >= 3:
                     return True
@@ -5782,13 +5848,17 @@ class App:
                     say("  " + str(e))
                     self._harvest_log("  launch failed: %s" % e)
                     continue
-                if proc is None:
-                    say(t("  Через внешний лоадер сбор не работает."))
-                    break
                 deadline = time.time() + (120 + 90 * len(names) if names
                                           else 120)
+                if not self._wait_for_client_start(min(deadline,
+                                                       time.time() + 120)):
+                    say(t("  Клиент не запустился."))
+                    self._harvest_log("  client never appeared")
+                    if not self._harvest_stop:
+                        continue
+                    break
                 if names:
-                    finished = self._wait_for_client_exit(proc, deadline, True)
+                    finished = self._wait_for_client_exit(deadline)
                 else:
                     # An account with no characters only needs the roster file.
                     finished = False
@@ -5797,15 +5867,17 @@ class App:
                             say(t("  Список персонажей получен."))
                             finished = True
                             break
-                        if not self._client_running() and proc.poll() is not None:
+                        if not self._client_running():
                             break
                         time.sleep(1)
                 if not finished or self._harvest_stop:
                     if not self._harvest_stop and names:
                         say(t("  Не уложился во время — закрываю клиент."))
                     self._harvest_log("  timeout/stop, closing the client")
+                    terminate_clients()
                     try:
-                        proc.terminate()
+                        if proc is not None:
+                            proc.terminate()
                     except OSError:
                         pass
                     for _ in range(30):

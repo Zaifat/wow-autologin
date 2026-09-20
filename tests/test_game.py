@@ -247,6 +247,7 @@ class HarvestApp:
 
     # the real waiting logic, so the test exercises it
     _wait_for_client_exit = L.App._wait_for_client_exit
+    _wait_for_client_start = L.App._wait_for_client_start
 
     def _client_running(self):
         # "the client is up" for the first few polls of each account
@@ -293,12 +294,13 @@ procs = []
 
 def fake_launch(cfg, char, on_error=None, harvest_chars=None):
     launches.append((char.get("name") or char.get("account"), harvest_chars))
-    client_alive[0] = 2
+    client_alive[0] = 5
     procs.append(HarvestProc())
     return procs[-1]
 
 
 L.launch_wow = fake_launch
+L.terminate_clients = lambda: True      # never really kill anything in a test
 addon_calls = []
 L.deploy_addon = lambda *a, **k: addon_calls.append(k)
 app = HarvestApp(harvest_cfg)
@@ -321,6 +323,31 @@ check("the run is written to the harvest log",
       any("run start" in ln for ln in app.logged)
       and any("run end" in ln for ln in app.logged))
 
+
+# an external loader is fine: the client isn't our child, so the run
+# follows "is a client running" instead
+launches.clear()
+app.logged = []
+loader_cfg = dict(harvest_cfg, use_loader=True,
+                  loader_path=r"C:\loader\loader.exe")
+loader_app = HarvestApp(loader_cfg)
+L.App._harvest_worker(loader_app, [(loader_cfg["characters"][0],
+                                    loader_cfg["characters"][1:3])],
+                      lines.append, lambda *a: None, lambda: None)
+check("a run still happens with an external loader", len(launches) == 1)
+check("no 'loader not supported' message any more",
+      not any("лоадер" in ln and "не работает" in ln for ln in lines))
+
+# a client that never comes up is reported instead of hanging
+launches.clear()
+client_alive[0] = 0
+no_client = HarvestApp(harvest_cfg)
+no_client._client_running = lambda: False
+L.App._harvest_worker(no_client, [(harvest_cfg["characters"][0],
+                                   harvest_cfg["characters"][1:3])],
+                      lines.append, lambda *a: None, lambda: None)
+check("a client that never starts is logged",
+      any("client never appeared" in ln for ln in no_client.logged))
 
 # stop button
 launches.clear()

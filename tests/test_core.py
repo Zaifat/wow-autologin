@@ -41,6 +41,26 @@ rescued = L.load_cfg()
 check("corrupt config falls back to .bak",
       any(e.get("name") == "Тест" for e in rescued["characters"]))
 
+# a config that went backwards is recovered from the backup
+big = dict(cfg)
+big["characters"] = cfg["characters"] * 3
+L.save_cfg(cfg)
+small_text = io.open(L.CONFIG_FILE, encoding="utf-8").read()
+L.save_cfg(big)
+big_text = io.open(L.CONFIG_FILE, encoding="utf-8").read()
+# something outside puts the older, smaller copy back
+io.open(L.CONFIG_FILE, "w", encoding="utf-8").write(small_text)
+io.open(L.CONFIG_FILE + ".bak", "w", encoding="utf-8").write(big_text)
+old = os.path.getmtime(L.CONFIG_FILE + ".bak") - 600
+os.utime(L.CONFIG_FILE, (old, old))
+L.RECOVERED_FROM_BACKUP[0] = False
+rescued2 = L.load_cfg()
+check("a config that lost entries is restored from the backup",
+      len(rescued2["characters"]) > len(cfg["characters"])
+      and L.RECOVERED_FROM_BACKUP[0])
+L.RECOVERED_FROM_BACKUP[0] = False
+L.save_cfg(cfg)
+
 # ── realmlist ──────────────────────────────────────────────────────────────
 wow = os.path.join(tmp, "wow")
 os.makedirs(wow, exist_ok=True)
