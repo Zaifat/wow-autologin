@@ -217,6 +217,19 @@ dlg.destroy()
 # ── characters come from the game; the dialog only edits them ────────────
 check("no manual add-character entry point",
       not hasattr(app, "add_character"))
+check("collecting characters is off until the user asks",
+      L._default_cfg()["auto_import_chars"] is False)
+# ── badges: the row image is built even without a game client ─────────────
+badge = L.row_badge("Маг", "BloodElf", "female")
+check("a character row gets a race + class badge",
+      badge is not None and badge.width() > badge.height())
+check("badges are cached instead of rebuilt",
+      L.row_badge("Маг", "BloodElf", "female") is badge)
+check("a row with neither class nor race has no badge",
+      L.row_badge("", "", "") is None)
+check("class rows are tinted with their colour",
+      L.class_row_tint("Маг") != L.PANEL and L.class_row_tint("") == L.PANEL)
+app.cfg["auto_import_chars"] = True
 app._import_char_lists([{"account": "fresh", "realm": "R",
                          "chars": [{"name": "Ручной", "class": 8}]}])
 root.update()

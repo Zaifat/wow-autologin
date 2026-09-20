@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""4 GB flag, graphics presets, anti-AFK switch and the addon flags."""
+"""4 GB flag, graphics presets and the addon flags."""
 import importlib.util, io, json, os, shutil, struct, sys, tempfile, time
 
 spec = importlib.util.spec_from_file_location("launcher", os.path.abspath("launcher.py"))
@@ -168,7 +168,7 @@ def capture(wow_dir, char, realmlist, extra=None):
 
 L._write_autologin_json = capture
 launch_cfg = L._default_cfg()
-launch_cfg.update({"wow_path": wow2, "anti_afk": True, "sync_friends": False,
+launch_cfg.update({"wow_path": wow2, "sync_friends": False,
                    "lfg": True, "characters": [
                        {"name": "", "account": "acc", "password": "pw",
                         "realm": "R", "realmlist": "logon.x",
@@ -177,7 +177,6 @@ launch_cfg.update({"wow_path": wow2, "anti_afk": True, "sync_friends": False,
                         "realm": "R", "realmlist": "logon.x"}]})
 L.launch_wow(launch_cfg, launch_cfg["characters"][1])
 time.sleep(1.5)                            # the restore thread
-check("anti-AFK switch is passed to the DLL", seen_json.get("antiafk") == "1")
 check("preset CVars are passed as cvar_ keys",
       seen_json.get("cvar_farclip") == "177"
       and seen_json.get("cvar_Sound_EnableAllSound") == "0")
@@ -224,11 +223,9 @@ launch_cfg["characters"][0]["graphics"] = ""
 launch_cfg["graphics_presets"] = {}
 
 seen_json.clear()
-launch_cfg["anti_afk"] = False
 launch_cfg["characters"][0]["graphics"] = ""
 launch_cfg["graphics_presets"] = {}
 L.launch_wow(launch_cfg, launch_cfg["characters"][1])
-check("no anti-AFK key when it is off", "antiafk" not in seen_json)
 check("no cvar_ keys without a preset",
       not any(k.startswith("cvar_") for k in seen_json))
 

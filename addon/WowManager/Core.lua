@@ -82,6 +82,8 @@ local function collect()
         d.class   = classToken
         local _, raceToken = UnitRace("player")
         d.race    = raceToken
+        -- the manager picks the matching race portrait out of the client
+        d.sex     = (UnitSex("player") == 3) and "female" or "male"
         d.faction = UnitFactionGroup("player")
         d.zone    = GetRealZoneText()
         d.subzone = GetSubZoneText()

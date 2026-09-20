@@ -26,11 +26,12 @@ python -m nuitka ^
     --include-data-file=AwesomeWotlkLib.dll=AwesomeWotlkLib.dll ^
     --include-data-file=wow.ico=wow.ico ^
     --include-data-dir=addon=addon ^
+    --include-module=wowart ^
     --include-package=pystray ^
     --include-package=PIL ^
     --product-name="Менеджер персонажей WOW" ^
-    --product-version=1.7.0.0 ^
-    --file-version=1.7.0.0 ^
+    --product-version=1.7.1.0 ^
+    --file-version=1.7.1.0 ^
     --company-name=Zaifat ^
     --output-filename=Manager_WOW.exe ^
     --output-dir=dist ^

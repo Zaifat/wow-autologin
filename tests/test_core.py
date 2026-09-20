@@ -61,6 +61,40 @@ check("a config that lost entries is restored from the backup",
 L.RECOVERED_FROM_BACKUP[0] = False
 L.save_cfg(cfg)
 
+# ── defaults: nothing is switched on for the user ─────────────────────────
+d = L._default_cfg()
+check("every optional feature starts off",
+      not any(d[k] for k in ("hover_card", "laa_patch", "auto_import_chars",
+                             "sync_friends", "lfg", "overlay", "backup_wtf")))
+check("backups keep ten copies, two days apart",
+      d["backup_keep"] == 10 and d["backup_interval_hours"] == 48)
+check("the interval is read in hours",
+      L.backup_interval_hours({"backup_interval_hours": 12}) == 12)
+check("an old config in minutes is converted to hours",
+      L.backup_interval_hours({"backup_interval_min": 180}) == 3)
+check("half an hour stays throttled instead of becoming every launch",
+      L.backup_interval_hours({"backup_interval_min": 30}) == 1)
+check("'every launch' survives the conversion",
+      L.backup_interval_hours({"backup_interval_min": 0}) == 0)
+check("junk falls back to the defaults",
+      L.backup_interval_hours({"backup_interval_hours": "x"}) == 48
+      and L.backup_keep({"backup_keep": "x"}) == 10
+      and L.backup_keep({"backup_keep": 0}) == 10)
+old = dict(cfg, backup_interval_min=120)
+old.pop("backup_interval_hours", None)
+L.save_cfg(old)
+back = L.load_cfg()
+check("loading rewrites the interval into hours",
+      back["backup_interval_hours"] == 2 and "backup_interval_min" not in back)
+L.save_cfg(cfg)
+
+# ── gold ──────────────────────────────────────────────────────────────────
+check("gold is shown without silver or copper",
+      L.fmt_gold(123456789) == "12 345g")
+check("thousands are spaced", L.fmt_gold(12345678900) == "1 234 567g")
+check("less than a gold shows zero", L.fmt_gold(9999) == "0g")
+check("no data means no text", L.fmt_gold(None) == "" and L.fmt_gold("x") == "")
+
 # ── realmlist ──────────────────────────────────────────────────────────────
 wow = os.path.join(tmp, "wow")
 os.makedirs(wow, exist_ok=True)

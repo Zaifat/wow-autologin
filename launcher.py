@@ -23,7 +23,21 @@ import webbrowser
 import zipfile
 from tkinter import filedialog, messagebox, ttk
 
-__version__ = "1.7.0"
+try:
+    import wowart          # class / race icons read from the game client
+except ImportError:
+    # Not on sys.path — happens when launcher.py is loaded by file path.
+    try:
+        import importlib.util as _ilu
+        _spec = _ilu.spec_from_file_location(
+            "wowart", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "wowart.py"))
+        wowart = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(wowart)
+    except Exception:
+        wowart = None
+
+__version__ = "1.7.1"
 
 
 # Bail out immediately if a debugger is attached. This is a soft anti-RE
@@ -216,10 +230,10 @@ _EN = {
     "самый старый удаляется автоматически (кольцевой буфер).":
         "The N most recent snapshots are kept. When there are more, the "
         "oldest one is deleted automatically (ring buffer).",
-    "Интервал между копиями (мин)": "Interval between copies (min)",
+    "Интервал между копиями (часов)": "Hours between copies",
     "Новый снимок создаётся при запуске, только если с прошлого прошло "
-    "не меньше указанных минут. 0 — копировать при каждом запуске.":
-        "A new snapshot is made on launch only if at least this many minutes "
+    "не меньше указанных часов. 0 — копировать при каждом запуске.":
+        "A new snapshot is made on launch only if at least this many hours "
         "have passed since the last one. 0 — back up on every launch.",
     "Папка для бэкапов (пусто = папка игры)":
         "Backup folder (empty = game folder)",
@@ -286,10 +300,6 @@ _EN = {
     "В игре": "In game",
     "Патч «4 ГБ памяти» для Wow.exe — меньше вылетов в ЦЛК и на БГ":
         "“4 GB” patch for Wow.exe — fewer crashes in ICC and battlegrounds",
-    "Анти-АФК: персонаж не уходит в «Отошёл» и не выходит из игры через 30 "
-    "минут":
-        "Anti-AFK: the character never goes “Away” or gets logged out after "
-        "30 minutes",
     "Общий список друзей и игнора для всех персонажей":
         "One friends and ignore list for all characters",
     "Поиск группы из чата (/wm lfg)": "Group finder from chat (/wm lfg)",
@@ -554,7 +564,7 @@ IG_NUMERIC = {"level", "gs", "ilvl", "honor", "arena", "achPoints", "bagFree",
 # building blocks for a composite value (dailyMax feeds "7 / 25") or data the
 # card renders as its own section.
 IG_SKIP = {"name", "realm", "updated", "currencies", "locks", "profs",
-           "xp", "xpMax", "rested", "class",
+           "xp", "xpMax", "rested", "class", "sex",
            "dailyMax", "dailyResetAt", "questsTotal", "arenaTeams"}
 IG_ORDER = ["level", "gs", "ilvl", "gold", "honor", "arena", "achPoints",
             "dailyDone", "questsDone", "arenaGames",
@@ -968,6 +978,170 @@ def class_text_color(cls):
     return "#%02X%02X%02X" % (r, g, b)
 
 
+# ── row badges ─────────────────────────────────────────────────────────────
+# Every character row shows its race and class icon. The artwork is the
+# game's own: it is read out of the installed client's MPQ archives once and
+# cached next to the config, so nothing from Blizzard ships with the manager.
+# Until that happens — or on a machine where it fails — rows fall back to
+# small drawn badges: a faction-coloured square with a two-letter race code
+# and a class-coloured disc.
+CLASS_ABBR = {
+    "Воин": "WR", "Паладин": "PA", "Охотник": "HN", "Разбойник": "RG",
+    "Жрец": "PR", "Рыцарь смерти": "DK", "Шаман": "SH", "Маг": "MG",
+    "Чернокнижник": "WL", "Друид": "DR",
+}
+# UnitRace() tokens as the addon reports them → code + faction
+RACE_BADGES = {
+    "human": ("HU", "a"), "dwarf": ("DW", "a"), "nightelf": ("NE", "a"),
+    "gnome": ("GN", "a"), "draenei": ("DE", "a"),
+    "orc": ("OR", "h"), "scourge": ("UD", "h"), "undead": ("UD", "h"),
+    "tauren": ("TA", "h"), "troll": ("TR", "h"), "bloodelf": ("BE", "h"),
+}
+FACTION_BADGE_BG = {"a": "#2F5FD0", "h": "#A82430"}
+BADGE_H = 20          # px; the roster rows are 32 px tall
+BADGE_GAP = 3
+BADGE_W = BADGE_H * 2 + BADGE_GAP * 2   # the right gap keeps the name clear
+_BADGE_SS = 4         # supersampling, for smooth edges at this size
+_BADGE_CACHE = {}     # (class, race, sex) -> PhotoImage (also keeps it alive)
+
+
+def _mix(c1, c2, k):
+    """Blend two #RRGGBB colours; k is how much of c2 to take."""
+    a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#%02X%02X%02X" % tuple(int(x + (y - x) * k) for x, y in zip(a, b))
+
+
+def _luma(col):
+    r, g, b = (int(col[i:i + 2], 16) for i in (1, 3, 5))
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+
+def class_row_tint(cls):
+    """A barely-there wash of the class colour over the panel background, so
+    rows read as their class without turning the table into a rainbow."""
+    col = CLASS_COLORS.get(cls)
+    if not col:
+        return PANEL
+    return _mix(PANEL, col, 0.10 if CURRENT_THEME in DARK_THEMES else 0.08)
+
+
+def _badge_font(px):
+    from PIL import ImageFont
+    for name in ("seguisb.ttf", "segoeuib.ttf", "arialbd.ttf", "arial.ttf"):
+        try:
+            return ImageFont.truetype(name, px)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def _badge_text(draw, box, txt, fnt, fill):
+    x0, y0, x1, y1 = box
+    l, tp, r, b = draw.textbbox((0, 0), txt, font=fnt)
+    draw.text((x0 + (x1 - x0 - (r - l)) / 2 - l,
+               y0 + (y1 - y0 - (b - tp)) / 2 - tp), txt, font=fnt, fill=fill)
+
+
+def icons_dir():
+    """Where the icons taken from the client are cached."""
+    return os.path.join(_config_dir(), "icons")
+
+
+def class_icon_key(cls):
+    """Russian class name -> the key the atlas uses ('Рыцарь смерти' -> …)."""
+    return CLASS_EN.get(cls, cls).lower().replace(" ", "")
+
+
+def extract_game_icons(wow_dir, force=False):
+    """Pull the class / race icons out of the client. Cheap no-op once they
+    are there; safe to call from a worker thread."""
+    if wowart is None or not wow_dir or not os.path.isdir(wow_dir):
+        return False
+    out = icons_dir()
+    if not force and os.path.isfile(os.path.join(out, "class_warrior.png")):
+        return True
+    try:
+        n = wowart.extract_icons(wow_dir, out)
+    except Exception:                         # an odd client must not break us
+        return False
+    if n:
+        _BADGE_CACHE.clear()
+    return bool(n)
+
+
+def _badge_half(kind, key, drawn):
+    """One BADGE_H square: the game's icon when it was extracted, otherwise
+    the drawn fallback `drawn(img, draw, size)`."""
+    from PIL import Image
+    path = wowart.icon_path(icons_dir(), kind, key) if wowart else None
+    size = BADGE_H * _BADGE_SS
+    if path:
+        try:
+            icon = Image.open(path).convert("RGBA")
+            return icon.resize((size, size), Image.LANCZOS)
+        except Exception:
+            pass
+    from PIL import ImageDraw
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    drawn(img, ImageDraw.Draw(img), size)
+    return img
+
+
+def row_badge(cls, race, sex=""):
+    """PhotoImage with the race and class icon of one row, or None."""
+    key = (cls or "", (race or "").lower(), (sex or "").lower())
+    if key in _BADGE_CACHE:
+        return _BADGE_CACHE[key]
+    info = RACE_BADGES.get(key[1])
+    col = CLASS_COLORS.get(cls)
+    if not info and not col:
+        _BADGE_CACHE[key] = None
+        return None
+    try:
+        import base64 as _b64
+        from io import BytesIO
+        from PIL import Image
+        size = BADGE_H * _BADGE_SS
+        img = Image.new("RGBA", (BADGE_W * _BADGE_SS, size), (0, 0, 0, 0))
+
+        def draw_race(_im, draw, n):
+            draw.rounded_rectangle((0, 0, n - 1, n - 1), radius=n // 4,
+                                   fill=FACTION_BADGE_BG[info[1]])
+            _badge_text(draw, (0, 0, n, n), info[0], _badge_font(int(n * 0.52)),
+                        "#FFFFFF")
+
+        def draw_class(_im, draw, n):
+            draw.ellipse((0, 0, n - 1, n - 1), fill=col)
+            _badge_text(draw, (0, 0, n, n), CLASS_ABBR.get(cls, ""),
+                        _badge_font(int(n * 0.52)),
+                        "#FFFFFF" if _luma(col) < 140 else "#14161B")
+
+        if info:
+            img.alpha_composite(
+                _badge_half("race", "%s_%s" % (key[1], key[2] or "male"),
+                            draw_race), (0, 0))
+        if col:
+            img.alpha_composite(
+                _badge_half("class", class_icon_key(cls), draw_class),
+                ((BADGE_H + BADGE_GAP) * _BADGE_SS, 0))
+        img = img.resize((BADGE_W, BADGE_H), Image.LANCZOS)
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        photo = tk.PhotoImage(data=_b64.b64encode(buf.getvalue()))
+    except Exception:
+        photo = None
+    _BADGE_CACHE[key] = photo
+    return photo
+
+
+def char_badge(char):
+    """Badges for a roster entry; race and sex come from the collected data."""
+    rec = INGAME.get(str(char.get("name", "")).lower()) or {}
+    return row_badge(char.get("class", ""), rec.get("race", ""),
+                     rec.get("sex", ""))
+
+
 class FlatButton(tk.Frame):
     """Flat button with an optional icon glyph and hover / disabled states —
     tk.Button can't mix an icon font with a text font or restyle its hover."""
@@ -1161,17 +1335,16 @@ def _default_cfg():
         "master_check":         "",   # base64 verifier, master mode only
         # Snapshot the game's WTF folder + Interface/AddOns before launch.
         "backup_wtf":           False,
-        "backup_keep":          3,    # ring buffer size
-        "backup_interval_min":  30,   # min minutes between snapshots
+        "backup_keep":          10,   # ring buffer size
+        "backup_interval_hours": 48,  # min hours between snapshots
         "backup_dir":           "",   # empty = <wow_dir>/_WowManagerBackups
         # UI extras
-        "hover_card":           True,    # info card on row hover (deploys addon)
+        "hover_card":           False,   # info card on row hover (deploys addon)
         "graphics_presets":     {},      # id -> {"name":…, "cvars": {…}}
-        "laa_patch":            True,    # 4GB flag on Wow.exe (never removed)
-        "anti_afk":             False,   # keep the character from going AFK
-        "auto_import_chars":    True,    # add an account's characters on login
-        "sync_friends":         True,    # one friends / ignore list for all alts
-        "lfg":                  True,    # in-game group finder from chat
+        "laa_patch":            False,   # 4GB flag on Wow.exe (never removed)
+        "auto_import_chars":    False,   # add an account's characters on login
+        "sync_friends":         False,   # one friends / ignore list for all alts
+        "lfg":                  False,   # in-game group finder from chat
         "overlay":              False,   # in-game minimap relog button
         # Columns: ordered keys + per-column label/width overrides + sort
         "columns":              ["class", "level", "gs", "gold", "realm"],
@@ -1203,6 +1376,30 @@ def _read_cfg_file(path):
     if not isinstance(cfg, dict):
         raise ValueError("config is not an object")
     return cfg
+
+
+def backup_keep(cfg):
+    """How many snapshots to keep."""
+    try:
+        return max(1, int(cfg.get("backup_keep", 10) or 10))
+    except (TypeError, ValueError):
+        return 10
+
+
+def backup_interval_hours(cfg):
+    """Hours between snapshots. Configs written before 1.7.1 stored minutes."""
+    if "backup_interval_hours" in cfg:
+        try:
+            return max(0, int(cfg.get("backup_interval_hours") or 0))
+        except (TypeError, ValueError):
+            return 48
+    try:
+        old = max(0, int(cfg.get("backup_interval_min", 0) or 0))
+    except (TypeError, ValueError):
+        return 48
+    # Half an hour used to be the default; keep such a config throttled
+    # instead of turning it into "back up on every launch".
+    return max(1, old // 60) if old else 0
 
 
 def secret_mode(cfg):
@@ -1256,6 +1453,10 @@ def load_cfg(decrypt=True):
     # Preserve that for users upgrading from before the use_loader flag.
     if "use_loader" not in cfg and (cfg.get("loader_path") or "").strip():
         cfg["use_loader"] = True
+    # Migrate: the backup interval used to be kept in minutes.
+    if "backup_interval_min" in cfg and "backup_interval_hours" not in cfg:
+        cfg["backup_interval_hours"] = backup_interval_hours(cfg)
+    cfg.pop("backup_interval_min", None)
     for k, v in _default_cfg().items():
         cfg.setdefault(k, v)
     if not isinstance(cfg.get("realms"), list) or not cfg["realms"]:
@@ -1263,10 +1464,12 @@ def load_cfg(decrypt=True):
     if not isinstance(cfg.get("realmlists"), list) or not cfg["realmlists"]:
         cfg["realmlists"] = list(REALMLISTS_DEFAULT)
     # Drop obsolete keys left behind by older builds
-    for k in ("via_loader", "loaders"):
+    for k in ("via_loader", "loaders", "anti_afk"):
         cfg.pop(k, None)
     for c in cfg.get("characters", []):
         c.pop("loader_name", None)
+    cfg["backup_keep"] = backup_keep(cfg)
+    cfg["backup_interval_hours"] = backup_interval_hours(cfg)
     cfg["secret_mode"] = secret_mode(cfg)
     cfg.pop("encrypt_secrets", None)
     normalize_roster(cfg)
@@ -2195,18 +2398,13 @@ def terminate_clients():
 
 
 def fmt_gold(copper):
-    """Copper int → 'Ng Ms Кc'."""
+    """Copper int → whole gold, e.g. '12 345g'. Silver and copper are noise
+    in a roster list, so they are dropped."""
     try:
         copper = int(copper)
     except (TypeError, ValueError):
         return ""
-    g, rem = divmod(copper, 10000)
-    s, c = divmod(rem, 100)
-    if g:
-        return f"{g:,}g {s}s".replace(",", " ")
-    if s:
-        return f"{s}s {c}c"
-    return f"{c}c"
+    return "{:,}g".format(copper // 10000).replace(",", " ")
 
 
 def _fmt_dhm(secs):
@@ -2973,37 +3171,33 @@ def launch_wow(cfg, char, on_error=None, harvest_chars=None):
                  or REALMLISTS_DEFAULT[0])
 
     deploy_patch(wow_dir, on_error=on_error,
-                 large_address=bool(cfg.get("laa_patch", True)))
+                 large_address=bool(cfg.get("laa_patch", False)))
     update_realmlist(wow_dir, realmlist)
 
     # Deploy (or remove) the data-collector / overlay addon based on settings
-    addon_on = bool(cfg.get("hover_card", True) or cfg.get("overlay", False)
-                    or cfg.get("sync_friends", True) or cfg.get("lfg", True))
+    addon_on = bool(cfg.get("hover_card", False) or cfg.get("overlay", False)
+                    or cfg.get("sync_friends", False) or cfg.get("lfg", False))
     deploy_addon(wow_dir, addon_on,
                  show_minimap=bool(cfg.get("overlay", False)),
                  characters=cfg.get("characters", []),
-                 hover_card=bool(cfg.get("hover_card", True)),
+                 hover_card=bool(cfg.get("hover_card", False)),
                  card_fields=cfg.get("card_fields"),
                  card_labels=cfg.get("card_labels"),
                  current_account=char.get("account", ""),
-                 sync_friends=bool(cfg.get("sync_friends", True)),
-                 lfg=bool(cfg.get("lfg", True)),
+                 sync_friends=bool(cfg.get("sync_friends", False)),
+                 lfg=bool(cfg.get("lfg", False)),
                  harvest_chars=harvest_chars)
 
     # Optional: snapshot WTF + AddOns in the background (throttled, ring-buffered)
     if cfg.get("backup_wtf"):
         dest_root = _backup_dest_root(cfg, wow_dir)
-        try:    keep = max(1, int(cfg.get("backup_keep", 3) or 3))
-        except (TypeError, ValueError): keep = 3
-        try:    interval = max(0, int(cfg.get("backup_interval_min", 30) or 0)) * 60
-        except (TypeError, ValueError): interval = 1800
+        keep = backup_keep(cfg)
+        interval = backup_interval_hours(cfg) * 3600
         threading.Thread(target=_backup_game_data,
                          args=(wow_dir, dest_root, keep, interval),
                          daemon=True).start()
 
     extra = {}
-    if cfg.get("anti_afk"):
-        extra["antiafk"] = "1"
     preset = effective_graphics(cfg, char)
     cvars = preset_cvars(cfg, preset) if preset else {}
     snapshot = read_config_cvars(wow_dir, cvars) if cvars else None
@@ -3505,6 +3699,7 @@ class App:
         threading.Thread(target=_clock, daemon=True).start()
         threading.Thread(target=_update, daemon=True).start()
         threading.Thread(target=self._refresh_ingame, daemon=True).start()
+        threading.Thread(target=self._grab_game_icons, daemon=True).start()
         # Re-read in-game data when the window regains focus (after playing)
         self.root.bind("<FocusIn>", self._on_focus_in)
         # Overlay relog watcher
@@ -3547,6 +3742,11 @@ class App:
             return
         self._ig_refreshing = True
         threading.Thread(target=self._refresh_ingame, daemon=True).start()
+
+    def _grab_game_icons(self):
+        """Take the class / race icons from the client, once per install."""
+        if extract_game_icons(self.cfg.get("wow_path", "")):
+            self.root.after(0, self.render_rows)
 
     def _refresh_ingame(self):
         """Reload the addon's collected data for all accounts into INGAME."""
@@ -3715,7 +3915,8 @@ class App:
                            foreground=TEXT)
         tree.tag_configure("orphans", font=font(10, "bold"), foreground=MUTED)
         for cls in CLASS_COLORS:
-            tree.tag_configure("cls_" + cls, foreground=class_text_color(cls))
+            tree.tag_configure("cls_" + cls, foreground=class_text_color(cls),
+                               background=class_row_tint(cls))
 
         tree.bind("<Configure>", self._fit_columns)
         tree.bind("<Double-1>", self._on_double)
@@ -4002,8 +4203,10 @@ class App:
                                                            not collapsed),
                             tags=("account",))
             for idx, c in shown:
+                badge = char_badge(c)
                 tree.insert(parent, "end", iid=str(idx),
                             text=c.get("name", ""),
+                            image=badge if badge is not None else "",
                             values=tuple(col_meta(col)[3](c)
                                          for col in self._cols),
                             tags=("cls_" + c.get("class", ""),))
@@ -4190,7 +4393,7 @@ class App:
     # ── hover card ───────────────────────────────────────────────────────────
 
     def _on_tree_motion(self, e):
-        if not self.cfg.get("hover_card", True) or self._drag:
+        if not self.cfg.get("hover_card", False) or self._drag:
             return
         iid = self.tree.identify_row(e.y)
         if not iid or iid == "orphans":
@@ -4573,7 +4776,7 @@ class App:
     def _check_char_lists(self):
         """Called from the watcher thread: notice new list files cheaply and
         hand the actual import to the UI thread."""
-        if not self.cfg.get("auto_import_chars", True):
+        if not self.cfg.get("auto_import_chars", False):
             return
         wow = self.cfg.get("wow_path", "")
         sig = charlist_signature(wow)
@@ -4583,7 +4786,7 @@ class App:
             self.root.after(0, lambda: self._import_char_lists(lists))
 
     def _import_char_lists(self, lists):
-        if not self.cfg.get("auto_import_chars", True):
+        if not self.cfg.get("auto_import_chars", False):
             return []
         added = import_char_lists(self.cfg, lists)
         if not added:
@@ -5398,8 +5601,7 @@ class App:
             def work():
                 # interval 0 forces a snapshot even if one was just taken
                 _backup_game_data(wow, _backup_dest_root(self.cfg, wow),
-                                  max(1, int(self.cfg.get("backup_keep", 3) or 3)),
-                                  0)
+                                  backup_keep(self.cfg), 0)
                 copied, errors = copy_wtf_settings(src_path, dst, groups)
                 self.root.after(0, lambda: finish(copied, errors))
 
@@ -5887,7 +6089,7 @@ class App:
                 time.sleep(2)               # let the client flush its files
                 self._harvest_log("  account done")
                 self.root.after(0, self._refresh_ingame)
-                if self.cfg.get("auto_import_chars", True):
+                if self.cfg.get("auto_import_chars", False):
                     lists = read_char_lists(wow)
                     self.root.after(0, lambda l=lists: self._import_char_lists(l))
                 collected += len(names)
@@ -5900,11 +6102,11 @@ class App:
                     break
                 time.sleep(1)
             try:
-                deploy_addon(wow, bool(self.cfg.get("hover_card", True)
+                deploy_addon(wow, bool(self.cfg.get("hover_card", False)
                                        or self.cfg.get("overlay", False)),
                              show_minimap=bool(self.cfg.get("overlay", False)),
                              characters=self.cfg.get("characters", []),
-                             hover_card=bool(self.cfg.get("hover_card", True)),
+                             hover_card=bool(self.cfg.get("hover_card", False)),
                              card_fields=self.cfg.get("card_fields"),
                              card_labels=self.cfg.get("card_labels"))
             except Exception:
@@ -5924,9 +6126,9 @@ class App:
                  font=("Segoe UI", 12, "bold")
                  ).pack(padx=20, pady=(16, 8), anchor="w")
 
-        keep_var     = tk.StringVar(value=str(self.cfg.get("backup_keep", 3)))
+        keep_var     = tk.StringVar(value=str(backup_keep(self.cfg)))
         interval_var = tk.StringVar(
-            value=str(self.cfg.get("backup_interval_min", 30)))
+            value=str(backup_interval_hours(self.cfg)))
         dir_var      = tk.StringVar(value=self.cfg.get("backup_dir", ""))
 
         def num_field(label, hint, var):
@@ -5946,9 +6148,9 @@ class App:
               "самый старый удаляется автоматически (кольцевой буфер)."),
             keep_var)
         num_field(
-            t("Интервал между копиями (мин)"),
+            t("Интервал между копиями (часов)"),
             t("Новый снимок создаётся при запуске, только если с прошлого "
-              "прошло не меньше указанных минут. 0 — копировать при каждом "
+              "прошло не меньше указанных часов. 0 — копировать при каждом "
               "запуске."),
             interval_var)
 
@@ -5992,9 +6194,9 @@ class App:
                         APP_TITLE,
                         t("Папка по-прежнему недоступна для записи.\n"
                           "Бэкапы в неё работать не будут."), parent=dlg)
-            self.cfg["backup_keep"]         = max(1, int(keep_s))
-            self.cfg["backup_interval_min"] = max(0, int(int_s))
-            self.cfg["backup_dir"]          = dirv
+            self.cfg["backup_keep"]           = max(1, int(keep_s))
+            self.cfg["backup_interval_hours"] = max(0, int(int_s))
+            self.cfg["backup_dir"]            = dirv
             save_cfg(self.cfg)
             dlg.destroy()
 
@@ -6314,7 +6516,7 @@ class App:
                   ).pack(side="left", padx=(8, 0))
 
         # ── UI extras ────────────────────────────────────────────────────────
-        hover_var = tk.BooleanVar(value=bool(self.cfg.get("hover_card", True)))
+        hover_var = tk.BooleanVar(value=bool(self.cfg.get("hover_card", False)))
         hover_row = tk.Frame(body, bg=BG)
         hover_row.pack(fill="x", padx=18, pady=(2, 0))
         tk.Checkbutton(
@@ -6378,14 +6580,12 @@ class App:
         game_vars = {}
         for key, label, default in (
                 ("auto_import_chars",
-                 "Собирать персонажей при входе в аккаунт", True),
+                 "Собирать персонажей при входе в аккаунт", False),
                 ("laa_patch", "Патч «4 ГБ памяти» для Wow.exe — меньше вылетов "
-                              "в ЦЛК и на БГ", True),
-                ("anti_afk", "Анти-АФК: персонаж не уходит в «Отошёл» и не "
-                             "выходит из игры через 30 минут", False),
+                              "в ЦЛК и на БГ", False),
                 ("sync_friends", "Общий список друзей и игнора для всех "
-                                 "персонажей", True),
-                ("lfg", "Поиск группы из чата (/wm lfg)", True)):
+                                 "персонажей", False),
+                ("lfg", "Поиск группы из чата (/wm lfg)", False)):
             var = tk.BooleanVar(value=bool(self.cfg.get(key, default)))
             game_vars[key] = var
             tk.Checkbutton(body, text=t(label), variable=var, bg=BG, fg=TEXT,
@@ -6459,6 +6659,9 @@ class App:
             save_cfg(self.cfg)
             dlg.destroy()
             self.rebuild()
+            # The game folder may have just been set for the first time.
+            threading.Thread(target=self._grab_game_icons,
+                             daemon=True).start()
 
         tk.Button(body, text=t("Сохранить"), bg=PRIMARY_BG, fg=PRIMARY_FG,
                   relief="flat", pady=8, command=save

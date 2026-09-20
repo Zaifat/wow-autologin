@@ -20,6 +20,7 @@ TESTS = [
     "test_tools.py",
     "test_roster.py",
     "test_game.py",
+    "test_icons.py",
     "test_ipc.py",
     "test_window.py",
     "test_static_audit.py",
