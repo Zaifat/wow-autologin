@@ -4088,6 +4088,10 @@ class App:
         self._sort_dir.pack(side="left")
         self._refresh_sort_picker()
 
+        FlatButton(footer, t("Друзья и игнор"), padx=10, pady=3,
+                   command=lambda: self.social_dialog(self.root)
+                   ).pack(side="left", padx=(16, 0))
+
         tk.Label(footer,
                  text=t("Двойной клик или Enter — играть  ·  ПКМ — все "
                         "действия"),
