@@ -164,19 +164,6 @@ _EN = {
     # hover card / columns
     "Карточка персонажа при наведении": "Character card on hover",
     "Иконки расы и класса у персонажей": "Race and class icons on rows",
-    "Друзья и игнор": "Friends and ignore",
-    "Списки общие для всех персонажей: имя из этого списка добавляется "
-    "каждому при входе, а удалённое — снимается у всех.":
-        "The lists are shared by every character: a name here is added to "
-        "each of them on login, and a name removed here is taken off all of "
-        "them.",
-    "Друзья": "Friends",
-    "Игнор": "Ignore",
-    "Списки…": "Lists…",
-    "Взять из игры": "Take from the game",
-    "Это имя уже в списке.": "That name is already on the list.",
-    "Добавлено имён: {n}": "Names added: {n}",
-    "Новых имён в игре не нашлось.": "No new names were found in the game.",
     "Оверлей в игре: кнопка перезахода у миникарты":
         "In-game overlay: relog button by the minimap",
     "Столбцы в списке": "Columns in the list",
@@ -1343,10 +1330,6 @@ def _default_cfg():
         "laa_patch":            False,   # 4GB flag on Wow.exe (never removed)
         "auto_import_chars":    False,   # add an account's characters on login
         "sync_friends":         False,   # one friends / ignore list for all alts
-        # The manager's own friends / ignore lists: names to have everywhere,
-        # and names to take off every character.
-        "social":               {"friends": [], "ignore": [],
-                                 "friends_drop": [], "ignore_drop": []},
         "lfg":                  False,   # in-game group finder from chat
         "overlay":              False,   # in-game minimap relog button
         # Columns: ordered keys + per-column label/width overrides + sort
@@ -1405,55 +1388,6 @@ def backup_interval_hours(cfg):
     # Half an hour used to be the default; keep such a config throttled
     # instead of turning it into "back up on every launch".
     return max(1, old // 60) if old else 0
-
-
-SOCIAL_KINDS = ("friends", "ignore")
-
-
-def social_lists(cfg):
-    """cfg["social"], repaired if an older or hand-edited config mangled it."""
-    box = cfg.get("social")
-    if not isinstance(box, dict):
-        box = {}
-        cfg["social"] = box
-    for kind in SOCIAL_KINDS:
-        for key in (kind, kind + "_drop"):
-            names, seen, clean = box.get(key), set(), []
-            for n in (names if isinstance(names, list) else []):
-                n = str(n).strip()
-                if n and n.lower() not in seen:
-                    seen.add(n.lower())
-                    clean.append(n)
-            box[key] = clean
-    return box
-
-
-def social_add(cfg, kind, name):
-    """Put a name on the shared list. Returns False for a duplicate."""
-    name = str(name or "").strip()
-    if not name:
-        return False
-    box = social_lists(cfg)
-    low = name.lower()
-    box[kind + "_drop"] = [n for n in box[kind + "_drop"] if n.lower() != low]
-    if any(n.lower() == low for n in box[kind]):
-        return False
-    box[kind].append(name)
-    return True
-
-
-def social_remove(cfg, kind, name):
-    """Take a name off the shared list and off every character in game."""
-    box = social_lists(cfg)
-    low = str(name or "").strip().lower()
-    if not low:
-        return False
-    # Keep the spelling the list had, not the one the caller typed.
-    known = [n for n in box[kind] if n.lower() == low]
-    box[kind] = [n for n in box[kind] if n.lower() != low]
-    if not any(n.lower() == low for n in box[kind + "_drop"]):
-        box[kind + "_drop"].append(known[0] if known else str(name).strip())
-    return bool(known)
 
 
 def secret_mode(cfg):
@@ -1522,7 +1456,6 @@ def load_cfg(decrypt=True):
         cfg.pop(k, None)
     for c in cfg.get("characters", []):
         c.pop("loader_name", None)
-    social_lists(cfg)
     cfg["backup_keep"] = backup_keep(cfg)
     cfg["backup_interval_hours"] = backup_interval_hours(cfg)
     cfg["secret_mode"] = secret_mode(cfg)
@@ -1993,16 +1926,10 @@ def _lua_str(s):
     return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def _lua_list(box, key):
-    """One of the manager's social lists as Lua table contents."""
-    names = (box or {}).get(key) or []
-    return ", ".join(_lua_str(n) for n in names)
-
-
 def deploy_addon(wow_dir, enabled, show_minimap, characters=None,
                  hover_card=True, card_fields=None, card_labels=None,
                  current_account="", sync_friends=True, lfg=True,
-                 harvest_chars=None, harvest_wait=12, social=None):
+                 harvest_chars=None, harvest_wait=12):
     """Copy the WowManager addon into the game (or remove it). Writes Config.lua
     with the minimap-overlay flag, the hover-card flag and the manager's
     character list — including each character's class colour and a snapshot of
@@ -2029,12 +1956,6 @@ def deploy_addon(wow_dir, enabled, show_minimap, characters=None,
                  # client; the rest need the manager to relaunch Wow.exe.
                  "    currentAccount = %s," % _lua_str(current_account or ""),
                  "    syncFriends = %s," % ("true" if sync_friends else "false"),
-                 # what the manager's friends / ignore editor wants everywhere
-                 "    friendsAdd = { %s }," % _lua_list(social, "friends"),
-                 "    friendsDrop = { %s }," % _lua_list(social,
-                                                         "friends_drop"),
-                 "    ignoreAdd = { %s }," % _lua_list(social, "ignore"),
-                 "    ignoreDrop = { %s }," % _lua_list(social, "ignore_drop"),
                  "    lfg = %s," % ("true" if lfg else "false"),
                  # harvest mode: the addon walks these characters by itself
                  "    harvest = %s," % ("true" if harvest_chars else "false"),
@@ -2370,53 +2291,6 @@ def read_ingame_data(wow_dir, account):
             for key, rec in db.items():
                 if isinstance(rec, dict) and rec.get("name"):
                     out[str(rec["name"]).lower()] = rec
-    return out
-
-
-def read_social_lists(wow_dir, account):
-    """The friends / ignore names the addon collected in game, across every
-    realm and faction of one account: {"friends": [...], "ignore": [...]}."""
-    out = {kind: [] for kind in SOCIAL_KINDS}
-    if not (wow_dir and account):
-        return out
-    base = os.path.join(wow_dir, "WTF", "Account")
-    try:
-        accs = [d for d in os.listdir(base)
-                if d.upper() == account.strip().upper()]
-    except OSError:
-        return out
-    seen = {kind: set() for kind in SOCIAL_KINDS}
-    for acc in accs:
-        sv = os.path.join(base, acc, "SavedVariables", ADDON_SV_FILE)
-        if not os.path.isfile(sv):
-            continue
-        try:
-            with open(sv, "r", encoding="utf-8", errors="ignore") as f:
-                data = parse_lua_savedvars(f.read())
-        except OSError:
-            continue
-        social = (data.get("WowManagerDB") or {}).get("__social")
-        if not isinstance(social, dict):
-            continue
-        for factions in social.values():
-            if not isinstance(factions, dict):
-                continue
-            for bucket in factions.values():
-                if not isinstance(bucket, dict):
-                    continue
-                for kind in SOCIAL_KINDS:
-                    entries = bucket.get(kind)
-                    if not isinstance(entries, dict):
-                        continue
-                    for key, info in entries.items():
-                        name = (info or {}).get("name") if isinstance(
-                            info, dict) else None
-                        name = str(name or key).strip()
-                        if name and name.lower() not in seen[kind]:
-                            seen[kind].add(name.lower())
-                            out[kind].append(name)
-    for kind in SOCIAL_KINDS:
-        out[kind].sort(key=lambda n: n.lower())
     return out
 
 
@@ -3300,7 +3174,6 @@ def launch_wow(cfg, char, on_error=None, harvest_chars=None):
                  current_account=char.get("account", ""),
                  sync_friends=bool(cfg.get("sync_friends", False)),
                  lfg=bool(cfg.get("lfg", False)),
-                 social=social_lists(cfg),
                  harvest_chars=harvest_chars)
 
     # Optional: snapshot WTF + AddOns in the background (throttled, ring-buffered)
@@ -4089,10 +3962,6 @@ class App:
                                     command=self._toggle_sort_dir)
         self._sort_dir.pack(side="left")
         self._refresh_sort_picker()
-
-        FlatButton(footer, t("Друзья и игнор"), padx=10, pady=3,
-                   command=lambda: self.social_dialog(self.root)
-                   ).pack(side="left", padx=(16, 0))
 
         tk.Label(footer,
                  text=t("Двойной клик или Enter — играть  ·  ПКМ — все "
@@ -6236,126 +6105,12 @@ class App:
                              characters=self.cfg.get("characters", []),
                              hover_card=bool(self.cfg.get("hover_card", False)),
                              card_fields=self.cfg.get("card_fields"),
-                             card_labels=self.cfg.get("card_labels"),
-                             social=social_lists(self.cfg))
+                             card_labels=self.cfg.get("card_labels"))
             except Exception:
                 pass
             say(t("Собрано персонажей: {c}").format(c=collected))
             self._harvest_log("=== run end: %d characters" % collected)
             done()
-
-    def social_dialog(self, parent):
-        """Edit the friends and ignore lists that every character shares.
-        Names added here are put on each character as it logs in; names taken
-        off here are removed from each of them."""
-        dlg = tk.Toplevel(parent)
-        dlg.title(t("Друзья и игнор"))
-        dlg.configure(bg=BG)
-        dlg.resizable(False, False)
-        dlg.grab_set()
-
-        tk.Label(dlg, text=t("Друзья и игнор"), bg=BG, fg=TEXT,
-                 font=("Segoe UI", 12, "bold")
-                 ).pack(padx=20, pady=(16, 2), anchor="w")
-        tk.Label(dlg, text=t("Списки общие для всех персонажей: имя из этого "
-                             "списка добавляется каждому при входе, а "
-                             "удалённое — снимается у всех."),
-                 bg=BG, fg=MUTED, font=("Segoe UI", 9), justify="left",
-                 wraplength=440, anchor="w"
-                 ).pack(fill="x", padx=20, pady=(0, 8))
-
-        sync_var = tk.BooleanVar(value=bool(self.cfg.get("sync_friends",
-                                                         False)))
-
-        def on_sync():
-            self.cfg["sync_friends"] = bool(sync_var.get())
-            save_cfg(self.cfg)
-
-        tk.Checkbutton(
-            dlg, text=t("Общий список друзей и игнора для всех персонажей"),
-            variable=sync_var, command=on_sync, bg=BG, fg=TEXT,
-            activebackground=BG, activeforeground=TEXT, selectcolor=ENTRY_BG,
-            font=("Segoe UI", 9), anchor="w"
-        ).pack(fill="x", padx=18, pady=(0, 8))
-
-        nb = ttk.Notebook(dlg)
-        nb.pack(fill="both", expand=True, padx=18, pady=(0, 6))
-
-        def tab(kind, title):
-            page = tk.Frame(nb, bg=BG)
-            nb.add(page, text=title)
-            lb = tk.Listbox(page, bg=ENTRY_BG, fg=TEXT, selectbackground=SEL_BG,
-                            selectforeground=SEL_FG, relief="flat", height=11,
-                            highlightthickness=1, highlightbackground=BORDER,
-                            highlightcolor=ACCENT, font=("Segoe UI", 10),
-                            activestyle="none")
-            lb.pack(fill="both", expand=True, padx=10, pady=(10, 6))
-
-            def refresh():
-                lb.delete(0, tk.END)
-                for n in social_lists(self.cfg)[kind]:
-                    lb.insert(tk.END, n)
-
-            refresh()
-            row = tk.Frame(page, bg=BG)
-            row.pack(fill="x", padx=10, pady=(0, 10))
-            var = tk.StringVar()
-            entry = _make_entry(row, var)
-            entry.pack(side="left", fill="x", expand=True, ipady=4)
-
-            def add(_e=None):
-                name = var.get().strip()
-                if not name:
-                    return
-                if not social_add(self.cfg, kind, name):
-                    messagebox.showinfo(APP_TITLE, t("Это имя уже в списке."),
-                                        parent=dlg)
-                    return
-                var.set("")
-                save_cfg(self.cfg)
-                refresh()
-
-            def drop():
-                sel = lb.curselection()
-                if not sel:
-                    return
-                social_remove(self.cfg, kind, lb.get(sel[0]))
-                save_cfg(self.cfg)
-                refresh()
-
-            def from_game():
-                names = []
-                for acc in sorted({(c.get("account") or "").strip()
-                                   for c in self.cfg.get("characters", [])}):
-                    if acc:
-                        names += read_social_lists(
-                            self.cfg.get("wow_path", ""), acc)[kind]
-                added = sum(1 for n in names if social_add(self.cfg, kind, n))
-                save_cfg(self.cfg)
-                refresh()
-                messagebox.showinfo(
-                    APP_TITLE,
-                    t("Добавлено имён: {n}").format(n=added) if added
-                    else t("Новых имён в игре не нашлось."), parent=dlg)
-
-            entry.bind("<Return>", add)
-            tk.Button(row, text=t("Добавить"), bg=BTN_BG, fg=TEXT,
-                      relief="flat", padx=10, command=add
-                      ).pack(side="left", padx=(8, 0), ipady=3)
-            tk.Button(row, text=t("Удалить"), bg=BTN_BG, fg=TEXT,
-                      relief="flat", padx=10, command=drop
-                      ).pack(side="left", padx=(6, 0), ipady=3)
-            tk.Button(row, text=t("Взять из игры"), bg=BTN_BG, fg=TEXT,
-                      relief="flat", padx=10, command=from_game
-                      ).pack(side="left", padx=(6, 0), ipady=3)
-
-        tab("friends", t("Друзья"))
-        tab("ignore", t("Игнор"))
-
-        tk.Button(dlg, text=t("Готово"), bg=PRIMARY_BG, fg=PRIMARY_FG,
-                  relief="flat", padx=18, pady=8, command=dlg.destroy
-                  ).pack(anchor="e", padx=20, pady=(4, 14))
-        self._fit_dialog(dlg, 520)
 
     def backup_settings(self, parent):
         dlg = tk.Toplevel(parent)
@@ -6828,28 +6583,21 @@ class App:
         tk.Label(body, text=t("В игре"), bg=BG, fg=MUTED, font=("Segoe UI", 9),
                  anchor="w").pack(fill="x", padx=20, pady=(10, 0))
         game_vars = {}
-        for key, label, default, *editor in (
+        for key, label, default in (
                 ("auto_import_chars",
                  "Собирать персонажей при входе в аккаунт", False),
                 ("laa_patch", "Патч «4 ГБ памяти» для Wow.exe — меньше вылетов "
                               "в ЦЛК и на БГ", False),
                 ("sync_friends", "Общий список друзей и игнора для всех "
-                                 "персонажей", False, self.social_dialog),
+                                 "персонажей", False),
                 ("lfg", "Поиск группы из чата (/wm lfg)", False)):
             var = tk.BooleanVar(value=bool(self.cfg.get(key, default)))
             game_vars[key] = var
-            line = tk.Frame(body, bg=BG)
-            line.pack(fill="x", padx=18, pady=(2, 0))
-            if editor:
-                tk.Button(line, text=t("Списки…"), bg=BTN_BG, fg=TEXT,
-                          relief="flat", padx=10, pady=2,
-                          command=lambda f=editor[0]: f(dlg)
-                          ).pack(side="right")
-            tk.Checkbutton(line, text=t(label), variable=var, bg=BG, fg=TEXT,
+            tk.Checkbutton(body, text=t(label), variable=var, bg=BG, fg=TEXT,
                            activebackground=BG, activeforeground=TEXT,
                            selectcolor=ENTRY_BG, font=("Segoe UI", 9),
-                           anchor="w", justify="left", wraplength=470
-                           ).pack(side="left", fill="x", expand=True)
+                           anchor="w", justify="left", wraplength=520
+                           ).pack(fill="x", padx=18, pady=(2, 0))
 
         # ── Config management (moved to the bottom) ──────────────────────────
         tk.Frame(body, bg=BORDER, height=1).pack(fill="x", padx=20, pady=(12, 6))

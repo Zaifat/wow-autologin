@@ -127,6 +127,9 @@ check("autologin json fields",
 
 L._write_autologin_json(wow, cfg["characters"][0], "logon.x")
 check("autologin.json written", os.path.isfile(os.path.join(wow, "autologin.json")))
+# the helper leaves the file alone while a client is up, and the machine
+# running the tests may well have one open
+L.is_wow_running = lambda: False
 L.drop_stale_autologin_json(wow)
 check("stale autologin.json removed",
       not os.path.isfile(os.path.join(wow, "autologin.json")))

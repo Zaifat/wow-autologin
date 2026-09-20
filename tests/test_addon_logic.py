@@ -91,6 +91,12 @@ RAID_CLASS_COLORS = { MAGE = { r = 0.4, g = 0.8, b = 1 } }
 src = io.open("addon/WowManager/Core.lua", encoding="utf-8").read()
 EXPORT = '''
 return { parseLfg = parseLfg, lowerUtf8 = lowerUtf8, parseGS = parseGS,
+         socialPut = socialPut, socialTake = socialTake,
+         socialShared = function(kind)
+             local out = {}
+             for i, e in ipairs(socialShared(kind)) do out[i] = e end
+             return out
+         end,
          computeGearScore = computeGearScore,
          syncList = syncList, socialTicker = socialTicker,
          socialQueue = function() return socialQueue end,
@@ -321,30 +327,58 @@ for _ in range(5):
     login_sync("Alpha")
 check("a refused name is tried at most twice", attempts == 2)
 
-# ── the lists edited in the manager ───────────────────────────────────────
-# The manager writes them into Config.lua; the addon treats them like names
-# added (or removed) on some other character.
+# ── the lists edited in game ──────────────────────────────────────────────
+# The editor window writes straight into the shared list, and the sync then
+# carries the change to every character.
 lua.NOW = lua.NOW + 60
-L.execute('WowManagerConfig.friendsAdd = { "Гость" }')
-L.execute('WowManagerConfig.friendsDrop = { "Dana" }')
+as_char("Alpha")
+mod.socialPut("friends", "  Гость  ")
+drain()
+check("a name added in the editor is put on this character",
+      "Гость" in friends_of("Alpha"))
+check("...with the spaces trimmed off",
+      any(e.name == "Гость" for e in lua.LISTS["Alpha"].friends.values()))
+lua.NOW = lua.NOW + 60
+login_sync("Beta")
+check("the added name reaches the other characters",
+      "Гость" in friends_of("Beta"))
+
+names = [e.name for e in mod.socialShared("friends").values()]
+check("the editor lists what the sync works from", "Гость" in names)
+
+as_char("Alpha")
+entry = next(e for e in mod.socialShared("friends").values()
+             if e.name == "Гость")
+mod.socialTake("friends", entry)
+drain()
+check("removing in the editor takes the name off this character",
+      "Гость" not in friends_of("Alpha"))
+lua.NOW = lua.NOW + 60
+login_sync("Beta")
+check("...and off the others", "Гость" not in friends_of("Beta"))
+
+# a character can sit the sync out
+lua.NOW = lua.NOW + 60
+as_char("Beta")
+lua.WowManagerCharDB.socialOff = True
+before = friends_of("Beta")
+mod.socialPut("friends", "Отдельный")
+drain()
+check("a character with the sync off is left alone",
+      friends_of("Beta") == before)
+lua.NOW = lua.NOW + 60
 login_sync("Alpha")
-check("a name from the manager is added in game", "Гость" in friends_of("Alpha"))
-check("a name removed in the manager goes away",
-      "Dana" not in friends_of("Alpha"))
-lua.NOW = lua.NOW + 60
+check("...while the others still get the name",
+      "Отдельный" in friends_of("Alpha"))
+as_char("Beta")
+lua.WowManagerCharDB.socialOff = None
 login_sync("Beta")
-check("the manager's list reaches every character",
-      "Гость" in friends_of("Beta") and "Dana" not in friends_of("Beta"))
-# ...but a name put back by hand afterwards stays: the manager seeds the
-# shared list, it doesn't keep policing it.
-lua.NOW = lua.NOW + 60
-as_char("Alpha"); lua.AddFriend("Dana"); mod.syncList("friends"); drain()
-lua.NOW = lua.NOW + 60
-login_sync("Beta")
-check("a name put back by hand wins over the manager's removal",
-      "Dana" in friends_of("Alpha") and "Dana" in friends_of("Beta"))
-L.execute('WowManagerConfig.friendsAdd = {}')
-L.execute('WowManagerConfig.friendsDrop = {}')
+check("switching the sync back on catches the character up",
+      "Отдельный" in friends_of("Beta"))
+as_char("Alpha")
+mod.socialTake("friends", next(e for e in mod.socialShared("friends").values()
+                               if e.name == "Отдельный"))
+drain()
 
 # ── harvest mode walks the account's characters ────────────────────────────
 def enter_world():

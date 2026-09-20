@@ -3,7 +3,6 @@
 addon deployment."""
 import importlib.util, io, os, socket, sys, tempfile, threading, time
 
-NEWLINE = chr(10)
 
 spec = importlib.util.spec_from_file_location("launcher", os.path.abspath("launcher.py"))
 L = importlib.util.module_from_spec(spec)
@@ -125,70 +124,6 @@ check("addon config still lists entries", '"Тест"' in conf and '"other"' in 
 check("Core.lua deployed",
       os.path.isfile(os.path.join(wow, "Interface", "AddOns", "WowManager",
                                   "Core.lua")))
-
-# ── the manager's own friends / ignore lists ──────────────────────────────
-cfg2 = L._default_cfg()
-check("both lists start empty",
-      L.social_lists(cfg2) == {"friends": [], "ignore": [],
-                               "friends_drop": [], "ignore_drop": []})
-check("a name is added", L.social_add(cfg2, "friends", " Дружок "))
-check("...and trimmed", L.social_lists(cfg2)["friends"] == ["Дружок"])
-check("the same name twice is refused",
-      not L.social_add(cfg2, "friends", "дружок"))
-L.social_add(cfg2, "ignore", "Спамер")
-check("the lists are separate", L.social_lists(cfg2)["ignore"] == ["Спамер"])
-L.social_remove(cfg2, "friends", "ДРУЖОК")
-box = L.social_lists(cfg2)
-check("removal takes the name off the list", box["friends"] == [])
-check("...and remembers to remove it in game",
-      box["friends_drop"] == ["Дружок"])
-check("adding it again cancels the removal",
-      L.social_add(cfg2, "friends", "Дружок")
-      and L.social_lists(cfg2)["friends_drop"] == [])
-cfg2["social"] = "junk"
-check("a mangled config is repaired, not fatal",
-      L.social_lists(cfg2)["friends"] == [])
-
-L.social_add(cfg2, "friends", "Дружок")
-L.social_remove(cfg2, "ignore", "Бывший")
-L.deploy_addon(wow, True, show_minimap=False, characters=[],
-               social=L.social_lists(cfg2))
-conf = io.open(os.path.join(wow, "Interface", "AddOns", "WowManager",
-                            "Config.lua"), encoding="utf-8").read()
-check("the lists reach the addon",
-      'friendsAdd = { "Дружок" }' in conf
-      and 'ignoreDrop = { "Бывший" }' in conf)
-check("empty lists are written as empty tables",
-      "friendsDrop = {  }," in conf and "ignoreAdd = {  }," in conf)
-
-# what the characters already have in game
-sv_dir = os.path.join(wow, "WTF", "Account", "ACC", "SavedVariables")
-os.makedirs(sv_dir, exist_ok=True)
-sv = [
-    'WowManagerDB = {',
-    '	["__social"] = {',
-    '		["Realm"] = {',
-    '			["Horde"] = {',
-    '				["friends"] = {',
-    '					["ивушка"] = { ["name"] = "Ивушка" },',
-    '				},',
-    '				["ignore"] = {',
-    '					["хам"] = { ["name"] = "Хам" },',
-    '				},',
-    '			},',
-    '		},',
-    '	},',
-    '}',
-]
-with io.open(os.path.join(sv_dir, "WowManager.lua"), "w",
-             encoding="utf-8") as fh:
-    fh.write(NEWLINE.join(sv))
-
-got = L.read_social_lists(wow, "acc")
-check("names collected in game can be read back",
-      got == {"friends": ["Ивушка"], "ignore": ["Хам"]})
-check("an unknown account reads as empty",
-      L.read_social_lists(wow, "nobody") == {"friends": [], "ignore": []})
 
 print()
 bad = [n for n, v in ok if not v]

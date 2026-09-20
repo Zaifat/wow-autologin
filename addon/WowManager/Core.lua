@@ -297,6 +297,8 @@ end
 -- Logging out lands us on the character select of the realm we are already
 -- connected to, so a character on a DIFFERENT realm is not reachable that way
 -- even on the same account. An entry with no realm set is assumed to be here.
+local switchRequested = false   -- a logout we asked for is running
+
 local function sameRealmAs(entry)
     local want = entry.realm
     if not want or want == "" then return true end
@@ -331,16 +333,25 @@ cancelWatch:SetScript("OnUpdate", function(self, elapsed)
     self.left = (self.left or 0) - elapsed
     if self.left <= 0 then
         self:Hide()
+        switchRequested = false
         if type(WowManagerSwitchCharacter) == "function" then
             WowManagerSwitchCharacter("")
         end
     end
 end)
 
+-- Ask the patch to take the next character after this logout, and remember
+-- that the logout is ours — a logout the player started is reported to the
+-- patch instead, so it doesn't mistake it for the server kicking us out.
+local function requestSwitch(name)
+    switchRequested = true
+    WowManagerSwitchCharacter(name)
+end
+
 local function switchTo(entry)
     if canSwitchInClient(entry) then
         cancelWatch:Hide()
-        WowManagerSwitchCharacter(entry.name)
+        requestSwitch(entry.name)
         Logout()
     else
         requestRelog(entry.account, entry.name)
@@ -354,6 +365,7 @@ end
 -- WowManagerConfig, which the manager rewrites on every launch.
 
 local toggleLfgWindow      -- defined with the group finder below
+local toggleSocialWindow   -- defined with the friends editor below
 
 local ALTS_ROWS   = 13      -- visible rows
 local ALTS_ROW_H  = 22
@@ -562,10 +574,16 @@ local function createAltsFrame()
     hint:SetText("Двойной клик по строке - зайти сразу")
 
     local lfgBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-    lfgBtn:SetWidth(160); lfgBtn:SetHeight(24)
+    lfgBtn:SetWidth(120); lfgBtn:SetHeight(24)
     lfgBtn:SetPoint("BOTTOMLEFT", 20, 20)
     lfgBtn:SetText("Поиск группы")
     lfgBtn:SetScript("OnClick", function() toggleLfgWindow() end)
+
+    local socialBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    socialBtn:SetWidth(130); socialBtn:SetHeight(24)
+    socialBtn:SetPoint("LEFT", lfgBtn, "RIGHT", 6, 0)
+    socialBtn:SetText("Друзья и игнор")
+    socialBtn:SetScript("OnClick", function() toggleSocialWindow() end)
 
     tinsert(UISpecialFrames, "WowManagerAltsFrame")   -- Esc closes it
     f:SetScript("OnShow", function() altsRefresh(); altsShowDetails() end)
@@ -791,6 +809,9 @@ local socialTicker = CreateFrame("Frame")
 socialTicker:Hide()
 
 local function socialEnabled()
+    -- A character can sit the sync out: its own list is left alone and it
+    -- neither gives names to the shared list nor takes any from it.
+    if WowManagerCharDB and WowManagerCharDB.socialOff then return false end
     return WowManagerConfig and WowManagerConfig.syncFriends
 end
 
@@ -806,7 +827,6 @@ local function socialBucket()
     b.ignore = b.ignore or {}
     b.goneFriends = b.goneFriends or {}
     b.goneIgnore = b.goneIgnore or {}
-    b.managerSeen = b.managerSeen or {}   -- manager edits already applied
     return b
 end
 
@@ -853,46 +873,6 @@ local SOCIAL_LISTS = {
     },
 }
 
--- Names the manager's own friends / ignore editor wants on every character.
--- They join the shared list exactly like a name added in game, so the sync
--- below carries them everywhere; a name the manager removed is marked gone.
---
--- Each entry is applied once and then remembered: the manager seeds the
--- shared list, it doesn't police it. Whatever the player does in game after
--- that — putting a dropped name back, dropping an added one — stands.
-local MANAGER_SOURCE = {
-    friends = { add = "friendsAdd", drop = "friendsDrop" },
-    ignore  = { add = "ignoreAdd",  drop = "ignoreDrop" },
-}
-
-local function applyManagerList(kind)
-    local src = MANAGER_SOURCE[kind]
-    local cfg = WowManagerConfig
-    if not (src and cfg) then return end
-    local L = SOCIAL_LISTS[kind]
-    local b = socialBucket()
-    local shared, gone = b[L.shared], b[L.gone]
-    local done = b.managerSeen
-    for _, name in ipairs(cfg[src.add] or {}) do
-        local key = foldCase(name or "")
-        local mark = "add:" .. kind .. ":" .. key
-        if key ~= "" and not done[mark] then
-            done[mark] = true
-            gone[key] = nil
-            if not shared[key] then shared[key] = { name = name } end
-        end
-    end
-    for _, name in ipairs(cfg[src.drop] or {}) do
-        local key = foldCase(name or "")
-        local mark = "drop:" .. kind .. ":" .. key
-        if key ~= "" and not done[mark] then
-            done[mark] = true
-            shared[key] = nil
-            if not gone[key] then gone[key] = time() end
-        end
-    end
-end
-
 local function queueAction(key, action)
     if socialQueued[key] then return end
     socialQueued[key] = true
@@ -905,7 +885,6 @@ local scheduleRecheck              -- defined right after syncList
 
 local function syncList(kind)
     if not socialEnabled() then return end
-    applyManagerList(kind)
     local L = SOCIAL_LISTS[kind]
     local b = socialBucket()
     local C = WowManagerCharDB
@@ -1010,6 +989,236 @@ local function syncList(kind)
     local snapshot = {}
     for n in pairs(cur) do snapshot[n] = true end
     C[L.last] = snapshot
+end
+
+-- ── the shared lists, edited in game ───────────────────────────────────────
+-- Everything the sync works from lives in the account-wide SavedVariables,
+-- so it can be edited here: adding a name puts it on every character, taking
+-- one off removes it everywhere. Each character can also opt out entirely.
+local socialFrame, socialTabKind, socialSelected = nil, "friends", nil
+local socialListRows = {}
+local SOCIAL_LIST_ROWS, SOCIAL_LIST_ROW_H = 12, 16
+
+local function socialShared(kind)
+    local L = SOCIAL_LISTS[kind]
+    local b = socialBucket()
+    local out = {}
+    for key, info in pairs(b[L.shared]) do
+        out[#out + 1] = { key = key, name = (info and info.name) or key }
+    end
+    table.sort(out, function(x, y) return foldCase(x.name) < foldCase(y.name) end)
+    return out
+end
+
+local function socialPut(kind, name)
+    name = (name or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if name == "" then return end
+    local L = SOCIAL_LISTS[kind]
+    local b = socialBucket()
+    local key = foldCase(name)
+    b[L.gone][key] = nil
+    if not b[L.shared][key] then b[L.shared][key] = { name = name } end
+    WowManagerCharDB[L.dropped] = WowManagerCharDB[L.dropped] or {}
+    WowManagerCharDB[L.dropped][key] = nil
+    syncList(kind)
+end
+
+local function socialTake(kind, entry)
+    if not entry then return end
+    local L = SOCIAL_LISTS[kind]
+    local b = socialBucket()
+    b[L.shared][entry.key] = nil
+    b[L.gone][entry.key] = time()
+    syncList(kind)
+end
+
+local function socialRefresh()
+    local f = socialFrame
+    if not (f and f:IsShown()) then return end
+    local list = socialShared(socialTabKind)
+    local offset = FauxScrollFrame_GetOffset(f.scroll) or 0
+    FauxScrollFrame_Update(f.scroll, #list, SOCIAL_LIST_ROWS, SOCIAL_LIST_ROW_H)
+    for i = 1, SOCIAL_LIST_ROWS do
+        local row = socialListRows[i]
+        local e = list[offset + i]
+        if e then
+            row.entry = e
+            row.text:SetText(e.name)
+            if socialSelected == e.key then row.sel:Show() else row.sel:Hide() end
+            row:Show()
+        else
+            row.entry = nil
+            row:Hide()
+        end
+    end
+    f.count:SetText(string.format("В списке: %d", #list))
+    local off = WowManagerCharDB and WowManagerCharDB.socialOff
+    f.skip:SetChecked(off and true or false)
+    if WowManagerConfig and WowManagerConfig.syncFriends then
+        f.warn:SetText(off and "Этот персонаж не участвует в синхронизации"
+                           or "")
+    else
+        f.warn:SetText("Синхронизация выключена в менеджере")
+    end
+    f.friendsBtn:SetText(socialTabKind == "friends" and "|cffFFD100Друзья|r"
+                                                    or "Друзья")
+    f.ignoreBtn:SetText(socialTabKind == "ignore" and "|cffFFD100Игнор|r"
+                                                  or "Игнор")
+end
+
+local function createSocialFrame()
+    if socialFrame then return socialFrame end
+    local f = CreateFrame("Frame", "WowManagerSocialFrame", UIParent)
+    f:SetWidth(360); f:SetHeight(360)
+    f:SetPoint("CENTER", 0, 20)
+    f:SetFrameStrata("HIGH"); f:SetToplevel(true)
+    f:SetMovable(true); f:EnableMouse(true); f:SetClampedToScreen(true)
+    f:RegisterForDrag("LeftButton")
+    f:SetScript("OnDragStart", function(self) self:StartMoving() end)
+    f:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+    f:SetBackdrop({
+        bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+        tile = true, tileSize = 32, edgeSize = 32,
+        insets = { left = 11, right = 12, top = 12, bottom = 11 } })
+    f:Hide()
+
+    local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    title:SetPoint("TOP", 0, -16)
+    title:SetText("Друзья и игнор")
+    local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+    close:SetPoint("TOPRIGHT", -8, -8)
+
+    local function tabButton(x, kind, label)
+        local b = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+        b:SetWidth(90); b:SetHeight(22)
+        b:SetPoint("TOPLEFT", x, -44)
+        b:SetText(label)
+        b:SetScript("OnClick", function()
+            socialTabKind = kind
+            socialSelected = nil
+            socialRefresh()
+        end)
+        return b
+    end
+    f.friendsBtn = tabButton(20, "friends", "Друзья")
+    f.ignoreBtn = tabButton(114, "ignore", "Игнор")
+
+    local hint = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    hint:SetPoint("TOPLEFT", 20, -72)
+    hint:SetText("Список общий для всех персонажей аккаунта")
+
+    local listBg = CreateFrame("Frame", nil, f)
+    listBg:SetPoint("TOPLEFT", 18, -88)
+    listBg:SetWidth(324)
+    listBg:SetHeight(SOCIAL_LIST_ROWS * SOCIAL_LIST_ROW_H + 8)
+    listBg:SetBackdrop({
+        bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 12,
+        insets = { left = 3, right = 3, top = 3, bottom = 3 } })
+    listBg:SetBackdropColor(0, 0, 0, 0.45)
+
+    local scroll = CreateFrame("ScrollFrame", "WowManagerSocialScroll", listBg,
+                               "FauxScrollFrameTemplate")
+    scroll:SetPoint("TOPLEFT", 4, -4)
+    scroll:SetWidth(296); scroll:SetHeight(SOCIAL_LIST_ROWS * SOCIAL_LIST_ROW_H)
+    scroll:SetScript("OnVerticalScroll", function(self, offset)
+        FauxScrollFrame_OnVerticalScroll(self, offset, SOCIAL_LIST_ROW_H,
+                                         socialRefresh)
+    end)
+    scroll:EnableMouseWheel(true)
+    scroll:SetScript("OnMouseWheel", function(self, delta)
+        local bar = _G[self:GetName() .. "ScrollBar"]
+        if bar then bar:SetValue(bar:GetValue() - delta * SOCIAL_LIST_ROW_H) end
+    end)
+    f.scroll = scroll
+
+    for i = 1, SOCIAL_LIST_ROWS do
+        local row = CreateFrame("Button", nil, listBg)
+        row:SetWidth(294); row:SetHeight(SOCIAL_LIST_ROW_H)
+        row:SetPoint("TOPLEFT", 5, -(4 + (i - 1) * SOCIAL_LIST_ROW_H))
+        row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+        local sel = row:CreateTexture(nil, "BACKGROUND")
+        sel:SetAllPoints()
+        sel:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+        sel:SetAlpha(0.6); sel:Hide()
+        row.sel = sel
+        local text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        text:SetPoint("LEFT", 4, 0)
+        text:SetJustifyH("LEFT")
+        row.text = text
+        row:SetScript("OnClick", function(self)
+            socialSelected = self.entry and self.entry.key or nil
+            socialRefresh()
+        end)
+        socialListRows[i] = row
+    end
+
+    local box = CreateFrame("EditBox", "WowManagerSocialEdit", f,
+                            "InputBoxTemplate")
+    box:SetWidth(150); box:SetHeight(20)
+    box:SetPoint("TOPLEFT", 24, -(96 + SOCIAL_LIST_ROWS * SOCIAL_LIST_ROW_H))
+    box:SetAutoFocus(false)
+    box:SetScript("OnEnterPressed", function(self)
+        socialPut(socialTabKind, self:GetText())
+        self:SetText(""); self:ClearFocus(); socialRefresh()
+    end)
+    box:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    f.box = box
+
+    local addBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    addBtn:SetWidth(78); addBtn:SetHeight(22)
+    addBtn:SetPoint("LEFT", box, "RIGHT", 6, 0)
+    addBtn:SetText("Добавить")
+    addBtn:SetScript("OnClick", function()
+        socialPut(socialTabKind, box:GetText())
+        box:SetText(""); socialRefresh()
+    end)
+
+    local delBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    delBtn:SetWidth(78); delBtn:SetHeight(22)
+    delBtn:SetPoint("LEFT", addBtn, "RIGHT", 4, 0)
+    delBtn:SetText("Убрать")
+    delBtn:SetScript("OnClick", function()
+        if not socialSelected then return end
+        for _, e in ipairs(socialShared(socialTabKind)) do
+            if e.key == socialSelected then socialTake(socialTabKind, e) end
+        end
+        socialSelected = nil
+        socialRefresh()
+    end)
+
+    local skip = CreateFrame("CheckButton", nil, f, "UICheckButtonTemplate")
+    skip:SetWidth(22); skip:SetHeight(22)
+    skip:SetPoint("BOTTOMLEFT", 18, 44)
+    skip:SetScript("OnClick", function(self)
+        WowManagerCharDB.socialOff = self:GetChecked() and true or nil
+        if not WowManagerCharDB.socialOff then
+            syncList("friends"); syncList("ignore")
+        end
+        socialRefresh()
+    end)
+    local skipText = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    skipText:SetPoint("LEFT", skip, "RIGHT", 2, 0)
+    skipText:SetText("Не синхронизировать этого персонажа")
+    f.skip = skip
+
+    f.count = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    f.count:SetPoint("BOTTOMLEFT", 22, 24)
+    f.warn = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    f.warn:SetPoint("BOTTOMRIGHT", -22, 24)
+    f.warn:SetJustifyH("RIGHT")
+
+    f:SetScript("OnShow", socialRefresh)
+    tinsert(UISpecialFrames, "WowManagerSocialFrame")
+    socialFrame = f
+    return f
+end
+
+function toggleSocialWindow()
+    local f = createSocialFrame()
+    if f:IsShown() then f:Hide() else f:Show() end
 end
 
 local socialRecheck = CreateFrame("Frame")
@@ -1450,7 +1659,7 @@ harvestTimer:SetScript("OnUpdate", function(self, elapsed)
     local nextName = harvestNext()
     if nextName and type(WowManagerSwitchCharacter) == "function" then
         harvestSay("data collected, moving on to " .. nextName)
-        WowManagerSwitchCharacter(nextName)
+        requestSwitch(nextName)
         Logout()
     else
         harvestSay("account done, closing the game")
@@ -1479,6 +1688,8 @@ SlashCmdList["WOWMANAGER"] = function(msg)
     local cmd = lowerUtf8(msg or ""):match("^%s*(%S*)")
     if cmd == "lfg" or cmd == "группа" or cmd == "лфг" then
         toggleLfgWindow()
+    elseif cmd == "friends" or cmd == "друзья" or cmd == "игнор" then
+        toggleSocialWindow()
     else
         toggleAltsWindow()
     end
@@ -1508,6 +1719,8 @@ f:RegisterEvent("ARENA_TEAM_UPDATE")
 f:RegisterEvent("FRIENDLIST_UPDATE")
 f:RegisterEvent("IGNORELIST_UPDATE")
 f:RegisterEvent("LOGOUT_CANCEL")
+f:RegisterEvent("PLAYER_CAMPING")
+f:RegisterEvent("PLAYER_QUITING")
 f:SetScript("OnEvent", function(self, event, arg1)
     if event == "PLAYER_LOGIN" then
         -- We are the session the manager relaunched (or the player just logged
@@ -1529,6 +1742,14 @@ f:SetScript("OnEvent", function(self, event, arg1)
         syncList("friends")
     elseif event == "IGNORELIST_UPDATE" then
         syncList("ignore")
+    elseif event == "PLAYER_CAMPING" or event == "PLAYER_QUITING" then
+        -- The player is leaving on purpose. The patch walks back into the
+        -- world when the server throws a character out right after it loaded,
+        -- and this is how it tells the two apart.
+        if not switchRequested
+                and type(WowManagerSwitchCharacter) == "function" then
+            WowManagerSwitchCharacter("!")
+        end
     elseif event == "LOGOUT_CANCEL" then
         -- Drop the armed target only if we turn out to still be in the world
         -- (see cancelWatch). The DLL also expires a request on its own after

@@ -59,8 +59,11 @@ static const DWORD kFreshListWaitMs = 5000;
 // The world can load and the server still push the character back to the
 // select screen a moment later — a session that hadn't finished closing, a
 // "character is still logging out" race. That isn't the player logging out,
-// so walk back in, at most twice per client.
-static const DWORD kBounceWindowMs = 45000;
+// so walk back in, at most twice per client. The window is short on purpose:
+// past it, a trip back to character select is the player's own doing. The
+// addon also reports a logout the player started (see kPlayerLeaving), which
+// switches the guard off outright.
+static const DWORD kBounceWindowMs = 10000;
 static const int   kMaxBounces     = 2;
 
 
@@ -669,9 +672,18 @@ static void gluexml_charlist_arrived()
 // the account session stays alive, so we can pick the next character straight
 // away instead of making the launcher restart the whole client. Passing "" (or
 // nothing useful) cancels a request the player backed out of.
+// The addon passes this instead of a character name when the player is
+// logging out (or quitting) on purpose.
+static const char* const kPlayerLeaving = "!";
+
 static int lua_WowManagerSwitchCharacter(lua_State* L)
 {
     const char* name = luaL_checkstring(L, 1);
+    if (name && strcmp(name, kPlayerLeaving) == 0) {
+        s_worldTick = 0;
+        writeLog("[switch] the player is logging out, not a kick");
+        return 0;
+    }
     s_pendingSwitch = name ? name : "";
     s_pendingTick = GetTickCount();
     s_listSinceSwitch = false;
