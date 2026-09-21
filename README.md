@@ -3,7 +3,7 @@
 **English** · [Русский](README.ru.md)
 
 One-click login for World of Warcraft 3.3.5a (WotLK). Pick a character — the client enters your login, password and 2FA code, selects the realm and walks into the world by itself.
--
+
 ![Character Manager](docs/screenshot.png)
 
 ## Features
