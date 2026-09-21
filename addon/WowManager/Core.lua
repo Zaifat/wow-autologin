@@ -590,9 +590,10 @@ local function createAltsFrame()
     end)
     f.goBtn = goBtn
 
+    -- left of the column captions, which share this line
     local hint = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    hint:SetPoint("TOP", 0, -32)
-    hint:SetText("Двойной клик по строке - зайти сразу")
+    hint:SetPoint("TOPLEFT", 22, -38)
+    hint:SetText("Двойной клик - зайти")
 
     local lfgBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
     lfgBtn:SetWidth(120); lfgBtn:SetHeight(24)
