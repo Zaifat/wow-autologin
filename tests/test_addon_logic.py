@@ -92,6 +92,12 @@ src = io.open("addon/WowManager/Core.lua", encoding="utf-8").read()
 EXPORT = '''
 return { parseLfg = parseLfg, lowerUtf8 = lowerUtf8, parseGS = parseGS,
          socialPut = socialPut, socialTake = socialTake,
+         socialRestore = socialRestore,
+         socialBanned = function()
+             local out = {}
+             for i, e in ipairs(socialBanned()) do out[i] = e end
+             return out
+         end,
          socialShared = function(kind)
              local out = {}
              for i, e in ipairs(socialShared(kind)) do out[i] = e end
@@ -356,6 +362,53 @@ check("removing in the editor takes the name off this character",
 lua.NOW = lua.NOW + 60
 login_sync("Beta")
 check("...and off the others", "Гость" not in friends_of("Beta"))
+
+# a name taken off in the editor stays off, even if someone adds it by hand
+lua.NOW = lua.NOW + 60
+as_char("Alpha")
+mod.socialPut("friends", "Проходимец")
+drain()
+lua.NOW = lua.NOW + 60
+login_sync("Beta")
+entry = next(e for e in mod.socialShared("friends").values()
+             if e.name == "Проходимец")
+as_char("Alpha")
+mod.socialTake("friends", entry)
+drain()
+check("the removed name is gone here", "Проходимец" not in friends_of("Alpha"))
+lua.NOW = lua.NOW + 60
+login_sync("Beta")
+check("...and on the other characters", "Проходимец" not in friends_of("Beta"))
+check("it is listed as removed",
+      any(e.name == "Проходимец" for e in mod.socialBanned().values()))
+lua.NOW = lua.NOW + 60
+as_char("Beta"); lua.AddFriend("Проходимец"); mod.syncList("friends"); drain()
+check("adding it back by hand does not stick",
+      "Проходимец" not in friends_of("Beta"))
+lua.NOW = lua.NOW + 60
+login_sync("Alpha")
+check("...and it never returns to the shared list",
+      not any(e.name == "Проходимец"
+              for e in mod.socialShared("friends").values()))
+
+# ...until it is restored from the "removed" tab
+banned = next(e for e in mod.socialBanned().values()
+              if e.name == "Проходимец")
+as_char("Alpha")
+mod.socialRestore(banned)
+drain()
+check("restoring puts it back on this character",
+      "Проходимец" in friends_of("Alpha"))
+check("...and it is no longer listed as removed",
+      not any(e.name == "Проходимец" for e in mod.socialBanned().values()))
+lua.NOW = lua.NOW + 60
+login_sync("Beta")
+check("...and it reaches the others again",
+      "Проходимец" in friends_of("Beta"))
+as_char("Alpha")
+mod.socialTake("friends", next(e for e in mod.socialShared("friends").values()
+                               if e.name == "Проходимец"))
+drain()
 
 # a character can sit the sync out
 lua.NOW = lua.NOW + 60

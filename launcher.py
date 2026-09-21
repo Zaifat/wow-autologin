@@ -592,24 +592,19 @@ def available_card_fields():
     return [k for k in CARD_ORDER if k in present]
 
 
-def entry_summary(char):
-    """Compact one-liner for a character — level, gear, gold — for places that
-    only have a single line to spend, like the in-game alts list."""
+def entry_columns(char):
+    """Level, gear score and gold of a character as three ready strings. The
+    in-game lists put them in fixed columns, so they are kept apart instead of
+    glued into one line."""
     rec = INGAME.get(str(char.get("name", "")).lower())
     if not rec:
-        return ""
-    bits = []
+        return "", "", ""
     lvl = rec.get("level")
-    if lvl:
-        bits.append(str(lvl))
     gs = rec.get("gs")
-    if gs:
-        bits.append("%s %s" % (t("ГС"), gs))
     gold = rec.get("gold")
-    if gold:
-        bits.append(fmt_gold(gold))
-    # Plain ASCII only: the game's font draws "·" and "—" as garbage.
-    return " - ".join(bits)
+    return (str(lvl) if lvl else "",
+            str(gs) if gs else "",
+            fmt_gold(gold) if gold else "")
 
 
 def _ig_display(rec, key, long=False):
@@ -1973,13 +1968,15 @@ def deploy_addon(wow_dir, enabled, show_minimap, characters=None,
             color = CLASS_COLORS.get(c.get("class", ""), "").lstrip("#").lower()
             info = card_lines(c, card_fields, card_labels) if nm else []
             info_lua = "{ %s }" % ", ".join(_lua_str(s) for s in info)
-            summary = entry_summary(c) if nm else ""
+            lvl, gs, gold = entry_columns(c) if nm else ("", "", "")
             lines.append(
                 "        { name = %s, account = %s, realm = %s, "
-                "isAccount = %s, color = %s, summary = %s, info = %s },"
+                "isAccount = %s, color = %s, lvl = %s, gs = %s, gold = %s, "
+                "info = %s },"
                 % (_lua_str(label), _lua_str(acc),
                    _lua_str((c.get("realm") or "").strip()), is_account,
-                   _lua_str(color), _lua_str(summary), info_lua))
+                   _lua_str(color), _lua_str(lvl), _lua_str(gs),
+                   _lua_str(gold), info_lua))
         lines += ["    },", "}", ""]
         with open(os.path.join(dst, "Config.lua"), "w", encoding="utf-8") as f:
             f.write("\n".join(lines))

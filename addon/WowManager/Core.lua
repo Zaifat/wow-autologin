@@ -369,6 +369,11 @@ local toggleSocialWindow   -- defined with the friends editor below
 
 local ALTS_ROWS   = 13      -- visible rows
 local ALTS_ROW_H  = 22
+-- Column layout of one roster row (the row itself is 250 wide)
+local ALTS_COL_NAME = 108
+local ALTS_X_LVL    = 116
+local ALTS_X_GS     = 144
+local ALTS_X_GOLD   = 190
 local altsFrame, altsRows, altsSelected
 
 local function altsEntries()
@@ -437,13 +442,15 @@ local function altsRefresh()
             row:Show()
             if item.header then
                 row.text:SetText("|cffffd100" .. item.header .. "|r")
-                row.sub:SetText("")
+                row.lvl:SetText(""); row.gs:SetText(""); row.gold:SetText("")
                 row.cdata = nil
                 row:Disable()
             else
                 local c = item.entry
                 row.text:SetText(altsColored(c, c.name or "?"))
-                row.sub:SetText(c.summary or "")
+                row.lvl:SetText(c.lvl or "")
+                row.gs:SetText(c.gs or "")
+                row.gold:SetText(c.gold or "")
                 row.cdata = c
                 row:Enable()
             end
@@ -493,6 +500,16 @@ local function createAltsFrame()
         insets = { left = 3, right = 3, top = 3, bottom = 3 } })
     listBg:SetBackdropColor(0, 0, 0, 0.45)
 
+    -- captions over the columns, so the numbers are not a guessing game
+    for _, h in ipairs({ { "Ур.", ALTS_X_LVL, 24 }, { "ГС", ALTS_X_GS, 42 },
+                         { "Голд", ALTS_X_GOLD, 60 } }) do
+        local fs = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        fs:SetPoint("TOPLEFT", 18 + 5 + h[2], -38)
+        fs:SetWidth(h[3])
+        fs:SetJustifyH("RIGHT")
+        fs:SetText(h[1])
+    end
+
     local scroll = CreateFrame("ScrollFrame", "WowManagerAltsScroll", listBg,
                                "FauxScrollFrameTemplate")
     scroll:SetPoint("TOPLEFT", 4, -4)
@@ -522,15 +539,19 @@ local function createAltsFrame()
 
         row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
 
-        local text = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        text:SetPoint("LEFT", 4, 0)
-        text:SetJustifyH("LEFT")
-        row.text = text
-
-        local sub = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-        sub:SetPoint("RIGHT", -6, 0)
-        sub:SetJustifyH("RIGHT")
-        row.sub = sub
+        -- Name, level, gear score and gold each get a fixed column, so the
+        -- numbers line up instead of jumping about with the name length.
+        local function column(x, w, justify, template)
+            local fs = row:CreateFontString(nil, "OVERLAY", template)
+            fs:SetPoint("LEFT", x, 0)
+            fs:SetWidth(w)
+            fs:SetJustifyH(justify)
+            return fs
+        end
+        row.text = column(4, ALTS_COL_NAME, "LEFT", "GameFontNormal")
+        row.lvl = column(ALTS_X_LVL, 24, "RIGHT", "GameFontDisableSmall")
+        row.gs = column(ALTS_X_GS, 42, "RIGHT", "GameFontDisableSmall")
+        row.gold = column(ALTS_X_GOLD, 60, "RIGHT", "GameFontDisableSmall")
 
         row:SetScript("OnClick", function(self)
             if not self.cdata then return end
@@ -827,6 +848,10 @@ local function socialBucket()
     b.ignore = b.ignore or {}
     b.goneFriends = b.goneFriends or {}
     b.goneIgnore = b.goneIgnore or {}
+    -- Names taken off in the editor. They are kept out for good: adding one
+    -- back by hand on any character removes it again, until it is restored
+    -- from the "Удалённые" tab.
+    b.banned = b.banned or {}
     return b
 end
 
@@ -943,12 +968,17 @@ local function syncList(kind)
 
     -- 2. removed elsewhere after this character picked it up: drop it here
     --    (once — if it shows up again after we dropped it, the player put it
-    --    back on purpose, and that wins over the old removal)
+    --    back on purpose, and that wins over the old removal), and names
+    --    banned in the editor, which come off every time they reappear
     -- 3. otherwise whatever this character has joins the shared list
+    local banned = b.banned
     local count = 0
     for n, info in pairs(cur) do
         count = count + 1
-        if gone[n] and dropped[n] then
+        if banned[kind .. ":" .. n] then
+            queueAction(kind .. "-" .. n, { del = L.del, name = info.name,
+                                            key = n, dropped = L.dropped })
+        elseif gone[n] and dropped[n] then
             dropped[n], gone[n] = nil, nil
             seen[n] = now
             shared[n] = info
@@ -1017,6 +1047,7 @@ local function socialPut(kind, name)
     local b = socialBucket()
     local key = foldCase(name)
     b[L.gone][key] = nil
+    b.banned[kind .. ":" .. key] = nil
     if not b[L.shared][key] then b[L.shared][key] = { name = name } end
     WowManagerCharDB[L.dropped] = WowManagerCharDB[L.dropped] or {}
     WowManagerCharDB[L.dropped][key] = nil
@@ -1029,13 +1060,34 @@ local function socialTake(kind, entry)
     local b = socialBucket()
     b[L.shared][entry.key] = nil
     b[L.gone][entry.key] = time()
+    b.banned[kind .. ":" .. entry.key] = { name = entry.name, kind = kind,
+                                           at = time() }
     syncList(kind)
+end
+
+local function socialBanned()
+    local b = socialBucket()
+    local out = {}
+    for mark, e in pairs(b.banned) do
+        out[#out + 1] = { mark = mark, key = e.key or mark:match(":(.*)$"),
+                          name = e.name or mark, kind = e.kind or "friends" }
+    end
+    table.sort(out, function(x, y) return foldCase(x.name) < foldCase(y.name) end)
+    return out
+end
+
+local function socialRestore(entry)
+    if not entry then return end
+    local b = socialBucket()
+    b.banned[entry.mark] = nil
+    socialPut(entry.kind, entry.name)
 end
 
 local function socialRefresh()
     local f = socialFrame
     if not (f and f:IsShown()) then return end
-    local list = socialShared(socialTabKind)
+    local banned = socialTabKind == "banned"
+    local list = banned and socialBanned() or socialShared(socialTabKind)
     local offset = FauxScrollFrame_GetOffset(f.scroll) or 0
     FauxScrollFrame_Update(f.scroll, #list, SOCIAL_LIST_ROWS, SOCIAL_LIST_ROW_H)
     for i = 1, SOCIAL_LIST_ROWS do
@@ -1043,15 +1095,32 @@ local function socialRefresh()
         local e = list[offset + i]
         if e then
             row.entry = e
-            row.text:SetText(e.name)
-            if socialSelected == e.key then row.sel:Show() else row.sel:Hide() end
+            if banned then
+                row.text:SetText(e.name .. "  |cff808080("
+                    .. (e.kind == "ignore" and "игнор" or "друзья") .. ")|r")
+            else
+                row.text:SetText(e.name)
+            end
+            local id = banned and e.mark or e.key
+            if socialSelected == id then row.sel:Show() else row.sel:Hide() end
             row:Show()
         else
             row.entry = nil
             row:Hide()
         end
     end
-    f.count:SetText(string.format("В списке: %d", #list))
+    f.count:SetText(string.format(banned and "Удалено: %d" or "В списке: %d",
+                                  #list))
+    -- SetShown() only exists from 4.0 on; this client needs the long form
+    if banned then
+        f.box:Hide(); f.addBtn:Hide()
+    else
+        f.box:Show(); f.addBtn:Show()
+    end
+    f.delBtn:SetText(banned and "Вернуть" or "Убрать")
+    f.hint:SetText(banned
+        and "Эти имена не синхронизируются, даже если добавить их вручную"
+        or "Список общий для всех персонажей аккаунта")
     local off = WowManagerCharDB and WowManagerCharDB.socialOff
     f.skip:SetChecked(off and true or false)
     if WowManagerConfig and WowManagerConfig.syncFriends then
@@ -1064,12 +1133,13 @@ local function socialRefresh()
                                                     or "Друзья")
     f.ignoreBtn:SetText(socialTabKind == "ignore" and "|cffFFD100Игнор|r"
                                                   or "Игнор")
+    f.bannedBtn:SetText(banned and "|cffFFD100Удалённые|r" or "Удалённые")
 end
 
 local function createSocialFrame()
     if socialFrame then return socialFrame end
     local f = CreateFrame("Frame", "WowManagerSocialFrame", UIParent)
-    f:SetWidth(360); f:SetHeight(360)
+    f:SetWidth(380); f:SetHeight(400)
     f:SetPoint("CENTER", 0, 20)
     f:SetFrameStrata("HIGH"); f:SetToplevel(true)
     f:SetMovable(true); f:EnableMouse(true); f:SetClampedToScreen(true)
@@ -1091,7 +1161,7 @@ local function createSocialFrame()
 
     local function tabButton(x, kind, label)
         local b = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-        b:SetWidth(90); b:SetHeight(22)
+        b:SetWidth(104); b:SetHeight(22)
         b:SetPoint("TOPLEFT", x, -44)
         b:SetText(label)
         b:SetScript("OnClick", function()
@@ -1102,11 +1172,12 @@ local function createSocialFrame()
         return b
     end
     f.friendsBtn = tabButton(20, "friends", "Друзья")
-    f.ignoreBtn = tabButton(114, "ignore", "Игнор")
+    f.ignoreBtn = tabButton(128, "ignore", "Игнор")
+    f.bannedBtn = tabButton(236, "banned", "Удалённые")
 
-    local hint = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    hint:SetPoint("TOPLEFT", 20, -72)
-    hint:SetText("Список общий для всех персонажей аккаунта")
+    f.hint = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    f.hint:SetPoint("TOPLEFT", 20, -72)
+    f.hint:SetText("Список общий для всех персонажей аккаунта")
 
     local listBg = CreateFrame("Frame", nil, f)
     listBg:SetPoint("TOPLEFT", 18, -88)
@@ -1149,7 +1220,9 @@ local function createSocialFrame()
         text:SetJustifyH("LEFT")
         row.text = text
         row:SetScript("OnClick", function(self)
-            socialSelected = self.entry and self.entry.key or nil
+            socialSelected = self.entry
+            and (socialTabKind == "banned" and self.entry.mark
+                 or self.entry.key) or nil
             socialRefresh()
         end)
         socialListRows[i] = row
@@ -1157,8 +1230,8 @@ local function createSocialFrame()
 
     local box = CreateFrame("EditBox", "WowManagerSocialEdit", f,
                             "InputBoxTemplate")
-    box:SetWidth(150); box:SetHeight(20)
-    box:SetPoint("TOPLEFT", 24, -(96 + SOCIAL_LIST_ROWS * SOCIAL_LIST_ROW_H))
+    box:SetWidth(130); box:SetHeight(20)
+    box:SetPoint("TOPLEFT", listBg, "BOTTOMLEFT", 12, -10)
     box:SetAutoFocus(false)
     box:SetScript("OnEnterPressed", function(self)
         socialPut(socialTabKind, self:GetText())
@@ -1168,8 +1241,9 @@ local function createSocialFrame()
     f.box = box
 
     local addBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-    addBtn:SetWidth(78); addBtn:SetHeight(22)
-    addBtn:SetPoint("LEFT", box, "RIGHT", 6, 0)
+    addBtn:SetWidth(80); addBtn:SetHeight(22)
+    addBtn:SetPoint("LEFT", box, "RIGHT", 8, 0)
+    f.addBtn = addBtn
     addBtn:SetText("Добавить")
     addBtn:SetScript("OnClick", function()
         socialPut(socialTabKind, box:GetText())
@@ -1177,21 +1251,28 @@ local function createSocialFrame()
     end)
 
     local delBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-    delBtn:SetWidth(78); delBtn:SetHeight(22)
-    delBtn:SetPoint("LEFT", addBtn, "RIGHT", 4, 0)
+    delBtn:SetWidth(80); delBtn:SetHeight(22)
+    delBtn:SetPoint("TOPRIGHT", listBg, "BOTTOMRIGHT", -2, -10)
     delBtn:SetText("Убрать")
     delBtn:SetScript("OnClick", function()
         if not socialSelected then return end
-        for _, e in ipairs(socialShared(socialTabKind)) do
-            if e.key == socialSelected then socialTake(socialTabKind, e) end
+        if socialTabKind == "banned" then
+            for _, e in ipairs(socialBanned()) do
+                if e.mark == socialSelected then socialRestore(e) end
+            end
+        else
+            for _, e in ipairs(socialShared(socialTabKind)) do
+                if e.key == socialSelected then socialTake(socialTabKind, e) end
+            end
         end
         socialSelected = nil
         socialRefresh()
     end)
+    f.delBtn = delBtn
 
     local skip = CreateFrame("CheckButton", nil, f, "UICheckButtonTemplate")
     skip:SetWidth(22); skip:SetHeight(22)
-    skip:SetPoint("BOTTOMLEFT", 18, 44)
+    skip:SetPoint("TOPLEFT", box, "BOTTOMLEFT", -6, -8)
     skip:SetScript("OnClick", function(self)
         WowManagerCharDB.socialOff = self:GetChecked() and true or nil
         if not WowManagerCharDB.socialOff then
@@ -1205,10 +1286,10 @@ local function createSocialFrame()
     f.skip = skip
 
     f.count = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    f.count:SetPoint("BOTTOMLEFT", 22, 24)
+    f.count:SetPoint("BOTTOMLEFT", 22, 20)
     f.warn = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    f.warn:SetPoint("BOTTOMRIGHT", -22, 24)
-    f.warn:SetJustifyH("RIGHT")
+    f.warn:SetPoint("BOTTOMLEFT", 22, 38)
+    f.warn:SetJustifyH("LEFT")
 
     f:SetScript("OnShow", socialRefresh)
     tinsert(UISpecialFrames, "WowManagerSocialFrame")

@@ -49,12 +49,13 @@ check("every advertised format renders",
 check("empty roster returns nothing",
       L.format_roster({"characters": []}, "text") == "")
 
-# ── feature 4: compact summary for the in-game list ────────────────────────
+# ── feature 4: the columns of the in-game list ─────────────────────────────
 L.INGAME["тестомаг"]["gold"] = 12345678
-line = L.entry_summary({"name": "Тестомаг"})
-check("summary mentions level and gear", "80" in line and "5400" in line)
-check("summary mentions gold", "234" in line or "1234" in line)
-check("summary is empty without data", L.entry_summary({"name": "Нет"}) == "")
+lvl, gs, gold = L.entry_columns({"name": "Тестомаг"})
+check("level and gear are separate columns", lvl == "80" and gs == "5400")
+check("gold is its own column", gold == "1 234g")
+check("no data means empty columns",
+      L.entry_columns({"name": "Нет"}) == ("", "", ""))
 
 wow = os.path.join(tmp, "game")
 os.makedirs(os.path.join(wow, "Interface", "AddOns"), exist_ok=True)
@@ -62,7 +63,8 @@ L.deploy_addon(wow, True, True, characters=cfg["characters"],
                card_fields=L.CARD_ORDER, current_account="acc-only")
 conf = io.open(os.path.join(wow, "Interface", "AddOns", "WowManager",
                             "Config.lua"), encoding="utf-8").read()
-check("addon config carries the summary", "summary = " in conf and "5400" in conf)
+check("addon config carries the columns",
+      'lvl = "80"' in conf and 'gs = "5400"' in conf and 'gold = "1 234g"' in conf)
 
 # ── feature 11: WTF discovery ──────────────────────────────────────────────
 def touch(path, body="x"):
